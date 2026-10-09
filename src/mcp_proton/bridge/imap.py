@@ -28,6 +28,7 @@ import contextlib
 import imaplib
 import logging
 import re
+import select
 import socket
 import ssl
 import threading
@@ -1081,10 +1082,13 @@ class ImapMailStore:
             client = conn.client
             sock = client.socket()
             try:
-                responses = list(client.idle_check(timeout=timeout))
-                sock.settimeout(OP_TIMEOUT)  # idle_check leaves the socket blocking
-                _, trailing = client.idle_done()
-                responses += list(trailing)
+                # IDLE is only a wake-up signal. IMAPClient's idle_check() reads lines in
+                # non-blocking mode and aborts on a response split across TCP segments
+                # ("unterminated line"), so wait for readability here and let
+                # idle_done() read everything in blocking mode, literals included.
+                select.select([sock], [], [], max(timeout, 0))
+                sock.settimeout(OP_TIMEOUT)
+                _, responses = client.idle_done()
             except (*_CONN_ERRORS, imaplib.IMAP4.error) as exc:
                 self._drop_idle_conn()
                 raise MailError(ErrorCode.BRIDGE_UNAVAILABLE, "IDLE connection lost") from exc
@@ -1112,10 +1116,10 @@ class ImapMailStore:
             finally:
                 self._idle_lock.release()
         else:  # an IDLE wait is in flight: break it by shutting the socket
-            conn = self._idle_conn
-            if conn is not None:
+            idle = self._idle_conn
+            if idle is not None:
                 with contextlib.suppress(OSError):
-                    conn.client.socket().shutdown(socket.SHUT_RDWR)
+                    idle.client.socket().shutdown(socket.SHUT_RDWR)
 
 
 def _parse_id(raw: Any) -> dict[str, str] | None:
