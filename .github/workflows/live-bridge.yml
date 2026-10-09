@@ -1,0 +1,45 @@
+name: Live Bridge tests
+
+# Manual only. Never add a pull_request or push trigger here. Live tests use a
+# real Proton Mail Bridge and a dedicated test account. They must not run on
+# untrusted code.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    name: Live Bridge acceptance
+    # Requires a self-hosted runner that has Proton Mail Bridge installed and
+    # signed in to a dedicated test account, and whose mcp-proton configuration
+    # directory (MCP_PROTON_CONFIG_DIR, or the default user config directory)
+    # holds only that test account. Never use a personal mailbox.
+    runs-on: [self-hosted, proton-bridge]
+    environment: live-bridge   # protected environment: required reviewers, deployment branches limited to main
+    timeout-minutes: 30
+    env:
+      MCP_PROTON_LIVE: "1"
+      # Name of the configured test account the live tests use.
+      MCP_PROTON_LIVE_ACCOUNT: ${{ vars.MCP_PROTON_LIVE_ACCOUNT }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install with dev extras
+        run: |
+          uv venv
+          uv pip install -e '.[dev]'
+
+      # Live tests carry the pytest marker "live" and are skipped unless
+      # MCP_PROTON_LIVE=1. The Bridge password is not passed here. It must
+      # come from the runner's keyring or from an env:<VAR> reference that the
+      # runner provides.
+      - name: Run live tests
+        run: .venv/bin/pytest -q -m live

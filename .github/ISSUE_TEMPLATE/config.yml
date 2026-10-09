@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/w0h1v/mcp-proton/security/advisories/new
+    about: Report vulnerabilities privately. Do not open a public issue for them.
+  - name: Proton Mail Bridge or Proton service problem
+    url: https://proton.me/support
+    about: Problems with Proton Mail, Proton Mail Bridge or your Proton account belong to Proton. This project cannot fix them.

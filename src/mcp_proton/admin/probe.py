@@ -255,7 +255,8 @@ class Prober:
         while sent and time.time() < deadline and not found:
             time.sleep(2)
             found = self.store.find_by_message_id(sent, mid)[1]
-        return {"recipients": [r.model_dump() for r in results],
+        # Evidence must not contain addresses: keep only acceptance and reply codes.
+        return {"recipients": [{"accepted": r.accepted, "code": r.code} for r in results],
                 "sent_copies_after_wait": len(found), "waited_seconds": self.sent_wait,
                 "note": "Bridge is expected to file Sent itself; mcp-proton never appends one"}
 
