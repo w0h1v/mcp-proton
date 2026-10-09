@@ -158,8 +158,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--include-mailboxes", action="store_true")
     p.add_argument("--no-probe", action="store_true", help="do not connect to Bridge")
 
-    sub.add_parser("purge", help="apply journal retention").add_argument(
-        "--older-than-days", type=int, required=True)
+    sub.add_parser("purge", help="apply retention to operational records").add_argument(
+        "--older-than-days", type=int, help="default: retention_days from config.toml")
 
     p = sub.add_parser("serve", help="run the MCP server")
     p.add_argument("--transport", choices=["stdio", "http"], default="stdio")
@@ -614,15 +614,16 @@ class Cli:
         return 0
 
     def cmd_purge(self) -> int:
-        if self.a.older_than_days < 0:
+        from ..services.retention import apply_retention
+
+        if self.a.older_than_days is not None and self.a.older_than_days < 0:
             raise CliError("--older-than-days must be >= 0")
         app = self._owner_app()
         try:
-            app.journal.expire_due()
-            n = app.journal.purge(datetime.now(UTC) - timedelta(days=self.a.older_than_days))
+            counts = apply_retention(app, self.a.older_than_days)
         finally:
             app.close()
-        print(f"Purged {n} operation record(s).")
+        print("Purged " + ", ".join(f"{v} {k.replace('_', ' ')}" for k, v in counts.items()) + ".")
         return 0
 
     # -- diagnostics / serve / client-config
