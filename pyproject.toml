@@ -78,6 +78,7 @@ check_untyped_defs = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]  # tests import shared fixtures as tests.services.conftest
 asyncio_mode = "auto"
 markers = [
   "live: requires a real Proton Mail Bridge and dedicated test account (opt-in via MCP_PROTON_LIVE=1)",
