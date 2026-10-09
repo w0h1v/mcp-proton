@@ -91,9 +91,23 @@ def _make_lifespan(app: MailApp) -> Any:
             except Exception:  # noqa: BLE001 - serving mail tools matters more than watching
                 log.exception("change watcher failed to start; continuing without it")
                 watcher = None
+        scheduler = None
+        try:
+            from ..jobs import Scheduler
+
+            scheduler = Scheduler(app)
+            scheduler.start()
+        except Exception:  # noqa: BLE001 - local automation is optional
+            log.exception("job scheduler failed to start; local automation will not fire")
+            scheduler = None
         try:
             yield {}
         finally:
+            if scheduler is not None:
+                try:
+                    await anyio.to_thread.run_sync(scheduler.stop)
+                except Exception:  # noqa: BLE001
+                    log.exception("job scheduler failed to stop cleanly")
             if watcher is not None:
                 try:
                     await anyio.to_thread.run_sync(watcher.stop)

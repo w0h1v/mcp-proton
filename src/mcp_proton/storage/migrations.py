@@ -137,3 +137,4 @@ register_migration("003_jobs", _m003_jobs)
 # Optional feature schemas register from their own modules; import them here so
 # every Database() gets the full schema regardless of import order.
 from ..index import migrations as _index_migrations  # noqa: E402,F401
+from ..jobs import migrations as _jobs_migrations  # noqa: E402,F401

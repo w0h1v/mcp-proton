@@ -25,3 +25,7 @@ for _name in SERVICE_MODULES:
     except ModuleNotFoundError as e:  # module not built yet in this checkout
         if e.name != f"mcp_proton.services.{_name}":
             raise
+
+# Optional automation package: its executors must be registered in every process
+# (MCP server, CLI, UI) so an approved automation operation can be resumed anywhere.
+importlib.import_module("mcp_proton.jobs")

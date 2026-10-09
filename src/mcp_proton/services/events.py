@@ -43,6 +43,7 @@ KIND_RECONCILE = register_kind("events.reconcile", OperationFamily.READ)
 EVENT_TYPES = frozenset({
     "message_added", "message_removed", "flags_changed", "mailbox_reset",
     "mailbox_created", "mailbox_deleted", "label_membership_changed",
+    "reminder_due",  # emitted by local reminders (jobs.reminders)
 })
 
 MAX_SCAN_UIDS = 50_000  # newest UIDs compared per mailbox; older ones are not tracked
