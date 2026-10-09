@@ -17,8 +17,8 @@ from mcp_proton.mcp.auth import match_client
 from mcp_proton.mcp.server import build_http_app, build_server
 from mcp_proton.policy.model import ClientConfig, Preset
 
-TOKEN = "tok-hermes-0123456789"  # noqa: S105 - test credential
-OTHER = "tok-other-9876543210"  # noqa: S105
+TOKEN = "tok-hermes-0123456789"  # noqa: S105 - synthetic test credential  gitleaks:allow
+OTHER = "tok-other-9876543210"  # noqa: S105  gitleaks:allow
 URL = "http://127.0.0.1:8765/mcp"
 
 
