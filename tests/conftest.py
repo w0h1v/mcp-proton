@@ -113,5 +113,7 @@ def _isolated_config(tmp_path, monkeypatch):
     monkeypatch.setenv("MCP_PROTON_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # Any real OS keyring access in tests fails fast instead of waiting on a prompt.
+    monkeypatch.setenv("PYTHON_KEYRING_BACKEND", "keyring.backends.fail.Keyring")
     monkeypatch.setenv("MCP_PROTON_TEST_SECRET", "demopass")
     os.environ.pop("MCP_PROTON_LIVE", None) if os.environ.get("MCP_PROTON_LIVE") != "1" else None

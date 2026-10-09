@@ -34,6 +34,7 @@ dependencies = [
 dev = [
   "pytest>=8",
   "pytest-asyncio>=0.24",
+  "pytest-timeout>=2.3",
   "pymap>=0.36",
   "aiosmtpd>=1.4",
   "ruff>=0.17,<0.18",  # pinned minor: lint rules change between releases
@@ -78,6 +79,8 @@ check_untyped_defs = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# A hung test fails with a stack trace instead of stalling CI for hours.
+timeout = 180
 pythonpath = ["."]  # tests import shared fixtures as tests.services.conftest
 asyncio_mode = "auto"
 markers = [
