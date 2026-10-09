@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
@@ -22,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from .errors import invalid
 
 _HANDLE_PREFIX = "h1."
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
 
 
 class Model(BaseModel):
@@ -181,8 +183,24 @@ class SearchQuery(Model):
     keyword: str | None = None
     header: dict[str, str] | None = None
     uid_range: str | None = None
-    any_of: list[SearchQuery] | None = None
+    any_of: list[SearchQuery] | None = Field(default=None, max_length=20)
     not_: SearchQuery | None = Field(default=None, alias="not")
+
+    @field_validator("from_", "to", "cc", "bcc", "subject", "body", "text", "keyword",
+                     "uid_range")
+    @classmethod
+    def _no_control_chars(cls, v: str | None) -> str | None:
+        if v is not None and _CONTROL_CHARS.search(v):
+            raise ValueError("must not contain control characters")
+        return v
+
+    @field_validator("header")
+    @classmethod
+    def _header_no_control_chars(cls, v: dict[str, str] | None) -> dict[str, str] | None:
+        for k, val in (v or {}).items():
+            if _CONTROL_CHARS.search(k) or _CONTROL_CHARS.search(val) or ":" in k:
+                raise ValueError("header names/values must not contain control characters")
+        return v
 
 
 class SearchResult(Model):

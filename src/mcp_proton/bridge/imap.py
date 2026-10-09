@@ -180,6 +180,7 @@ def _has_non_ascii(criteria: Any) -> bool:
     return False
 
 
+_CONTROL = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")  # tab is the only allowed control char
 _QUOTE_CHARS = re.compile(r'[\x00-\x20"\\(){%*\]]')  # atom-specials (RFC 3501)
 
 
@@ -192,6 +193,10 @@ def encode_criteria(criteria: list[Any]) -> list[bytes]:
     """
     out: list[bytes] = []
     for item in criteria:
+        if isinstance(item, (str, bytes)) and _CONTROL.search(
+                item if isinstance(item, str) else item.decode("latin-1")):
+            # CR/LF would end the command line and let the value inject IMAP commands.
+            raise invalid("search values must not contain control characters")
         if out and out[-1] == b"UID" and isinstance(item, str):
             out.append(item.encode("ascii"))  # a sequence set is an atom ("5:*")
         elif isinstance(item, list):

@@ -46,9 +46,10 @@ def normalize_id(value: str | None) -> str | None:
     """Canonical comparison form of a Message-ID: no brackets, lower case."""
     if not value:
         return None
+    # Only a well-formed <id> is used: header text is attacker-controlled and is later
+    # placed in IMAP SEARCH criteria, so never fall back to the raw value.
     m = _ID_RE.search(value)
-    out = (m.group(1) if m else value).strip().lower()
-    return out or None
+    return m.group(1).strip().lower() or None if m else None
 
 
 def normalize_subject(subject: str | None) -> str:
