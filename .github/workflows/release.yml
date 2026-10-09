@@ -1,0 +1,116 @@
+name: Release
+
+# Push a version tag to release, e.g.:
+#   git tag -s v0.1.0a1 -m "mcp-proton 0.1.0a1" && git push origin v0.1.0a1
+# The tag must match the version in pyproject.toml. Pre-release versions
+# (a/b/rc) become GitHub pre-releases.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify tag and run tests
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+      - name: Tag matches pyproject version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(python3 -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::tag v$tag does not match pyproject version $version"; exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$version" =~ (a|b|rc)[0-9]+$ ]]; then pre=true; else pre=false; fi
+          echo "prerelease=$pre" >> "$GITHUB_OUTPUT"
+      - run: uv venv --python 3.13 && uv pip install -e '.[dev]'
+      - run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+      - run: ruff check src tests
+      - run: mypy
+      - run: pytest -q -m "not live"
+
+  build:
+    name: Build distributions
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+      - run: uv build
+      - name: Check archive contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          unzip -l dist/*.whl | grep -q 'licenses/LICENSE'
+          tar tzf dist/*.tar.gz | grep -q '/LICENSE$'
+          ! tar tzf dist/*.tar.gz | grep -E '\.(sqlite3|db|env)$|/\.venv/'
+      - name: Software bill of materials
+        run: |
+          uvx --from cyclonedx-bom cyclonedx-py environment --of JSON -o dist/sbom.cdx.json || \
+            echo "SBOM generation failed; release continues without it"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  github-release:
+    name: GitHub release
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Build provenance attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "dist/*.whl, dist/*.tar.gz"
+      - name: Create release with generated notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "mcp-proton ${{ needs.verify.outputs.version }}" \
+            --generate-notes \
+            ${{ needs.verify.outputs.prerelease == 'true' && '--prerelease' || '' }}
+
+  pypi:
+    name: Publish to PyPI
+    # Opt-in: set repository variable PUBLISH_TO_PYPI=true after configuring a PyPI
+    # trusted publisher for this repository and the "pypi" environment.
+    if: vars.PUBLISH_TO_PYPI == 'true'
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/mcp-proton/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - run: rm -f dist/sbom.cdx.json
+      - uses: pypa/gh-action-pypi-publish@release/v1

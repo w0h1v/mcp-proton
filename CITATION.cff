@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "If you use mcp-proton in research or publications, please cite it as below."
+title: "mcp-proton"
+abstract: "Policy-controlled Model Context Protocol server that gives AI agents access to Proton Mail through Proton Mail Bridge."
+type: software
+authors:
+  - name: "mcp-proton contributors"
+license: Apache-2.0
+repository-code: "https://github.com/w0h1v/mcp-proton"
+version: 0.1.0a1
+keywords: [mcp, model-context-protocol, proton-mail, email, imap, smtp, ai-agents]

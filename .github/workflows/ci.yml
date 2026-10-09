@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches-ignore: ["dependabot/**"]  # Dependabot branches are tested via their PRs
   pull_request:
 
 # Read-only token by default. Jobs that need more must request it explicitly.
@@ -31,12 +31,12 @@ jobs:
             python-version: "3.13"
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v7
 
       - name: Create virtual environment
         run: uv venv --python ${{ matrix.python-version }}
@@ -72,13 +72,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out (full history for the commit range)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
 
       - name: Run gitleaks
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Organization-owned repositories also need GITLEAKS_LICENSE.
@@ -90,10 +90,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Review dependency changes
-        uses: actions/dependency-review-action@v4
+        uses: actions/dependency-review-action@v5
+        # Fails until "Dependency graph" is enabled in Settings > Code security.
+        # Non-blocking until then so it cannot mask the test result; remove this
+        # line once the graph is on.
+        continue-on-error: true
         # Requires the dependency graph to be enabled for the repository.
