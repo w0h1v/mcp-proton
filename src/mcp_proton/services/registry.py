@@ -6,11 +6,26 @@ Add new service modules here; an unregistered operation kind cannot execute.
 from __future__ import annotations
 
 import importlib
-import logging
 
-log = logging.getLogger(__name__)
-
-SERVICE_MODULES: list[str] = []
+SERVICE_MODULES: list[str] = [
+    "mailboxes",
+    "messages",
+    "drafts",
+    "sending",
+    "attachments",
+    "transfer",
+    "events",
+    "conversations",
+    "accounts",
+]
 
 for _name in SERVICE_MODULES:
-    importlib.import_module(f"mcp_proton.services.{_name}")
+    try:
+        importlib.import_module(f"mcp_proton.services.{_name}")
+    except ModuleNotFoundError as e:  # module not built yet in this checkout
+        if e.name != f"mcp_proton.services.{_name}":
+            raise
+
+# Optional automation package: its executors must be registered in every process
+# (MCP server, CLI, UI) so an approved automation operation can be resumed anywhere.
+importlib.import_module("mcp_proton.jobs")

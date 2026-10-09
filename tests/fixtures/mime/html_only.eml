@@ -1,0 +1,21 @@
+From: Alice Example <alice@example.test>
+To: Bob <bob@example.test>
+Date: Tue, 07 Oct 2025 10:30:00 +0000
+Message-ID: <m1@example.test>
+Subject: Newsletter
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><head><title>x</title><style>body{background:url(http://evil.test/bg.png)}</style>
+<link rel="stylesheet" href="http://evil.test/a.css"></head>
+<body onload="steal()"><h1>Big News</h1>
+<p style="background:url(https://evil.test/p.png)">Hello <b>world</b> &amp; friends.</p>
+<img src="https://tracker.test/pixel.gif" width="1" height="1">
+<img src="data:image/png;base64,iVBORw0KGgo=" alt="inline-data">
+<img src="cid:logo@example.test" alt="logo">
+<a href="https://example.test/x" onclick="evil()">link</a>
+<a href="javascript:alert(1)">bad</a>
+<script>alert('xss')</script>
+<iframe src="http://evil.test/frame"></iframe>
+<form action="http://evil.test/post"><input name="q"><button>Go</button></form>
+</body></html>

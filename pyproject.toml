@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.25"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
@@ -8,12 +8,14 @@ version = "0.1.0a1"
 description = "MCP server giving agents policy-controlled access to Proton Mail through Proton Mail Bridge"
 readme = "README.md"
 requires-python = ">=3.11"
-# License is an explicit owner decision before the first public release (see docs/design.md).
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "mcp-proton contributors" }]
 keywords = ["mcp", "proton", "email", "imap", "smtp", "agents"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Programming Language :: Python :: 3",
+  "Operating System :: OS Independent",
   "Topic :: Communications :: Email",
 ]
 dependencies = [
@@ -32,10 +34,16 @@ dependencies = [
 dev = [
   "pytest>=8",
   "pytest-asyncio>=0.24",
+  "pytest-timeout>=2.3",
   "pymap>=0.36",
   "aiosmtpd>=1.4",
-  "ruff>=0.6",
-  "mypy>=1.11",
+  "ruff>=0.17,<0.18",  # pinned minor: lint rules change between releases
+  "mypy>=2.4,<2.5",
+]
+
+docs = [
+  "mkdocs>=1.6,<2",
+  "mkdocs-material>=9.5,<10",
 ]
 
 [project.scripts]
@@ -48,7 +56,7 @@ Documentation = "https://github.com/w0h1v/mcp-proton/tree/main/docs"
 packages = ["src/mcp_proton"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/mcp_proton", "tests", "docs", "README.md", "CHANGELOG.md", "pyproject.toml"]
+include = ["src/mcp_proton", "tests", "docs", "README.md", "CHANGELOG.md", "LICENSE", "NOTICE", "pyproject.toml"]
 
 [tool.ruff]
 line-length = 100
@@ -71,6 +79,9 @@ check_untyped_defs = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# A hung test fails with a stack trace instead of stalling CI for hours.
+timeout = 180
+pythonpath = ["."]  # tests import shared fixtures as tests.services.conftest
 asyncio_mode = "auto"
 markers = [
   "live: requires a real Proton Mail Bridge and dedicated test account (opt-in via MCP_PROTON_LIVE=1)",

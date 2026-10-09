@@ -1,0 +1,3 @@
+# Reviewed false positives. Each entry is a gitleaks fingerprint (commit:file:rule:line).
+# Synthetic bearer tokens in HTTP auth tests; not real credentials.
+a7532504a6f79ef09b2cbd61f410d6e6d4e8c5fc:tests/mcp/test_mcp_http.py:generic-api-key:20

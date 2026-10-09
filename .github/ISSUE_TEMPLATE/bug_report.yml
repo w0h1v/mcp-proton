@@ -1,0 +1,74 @@
+name: Bug report
+description: Report a defect in mcp-proton
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not paste mailbox exports, message contents, credentials, passwords, tokens or bearer headers. Redact them or leave them out. Use a test account when a reproduction needs real mail.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps. Use the CLI or a fake server where possible.
+    validations:
+      required: false
+
+  - type: input
+    id: mcp-proton-version
+    attributes:
+      label: mcp-proton version
+      description: The `mcp-proton` entry under `versions` in the diagnostics output below, or the commit you installed from.
+    validations:
+      required: true
+
+  - type: input
+    id: bridge-version
+    attributes:
+      label: Proton Mail Bridge version
+      description: From Bridge's About screen. Write "unknown" if you do not know.
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: For example, macOS 15.2 on arm64, or Ubuntu 24.04 on x86_64.
+    validations:
+      required: true
+
+  - type: input
+    id: mcp-client
+    attributes:
+      label: MCP client and version
+      description: For example, Hermes 1.2.3, or "unknown". Include whether the client uses stdio or HTTP.
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Redacted diagnostics
+      description: |
+        Paste the output of `mcp-proton diagnostics --json`. The report is metadata only by default. Check it before you paste it. Remove any account name, address or mailbox name you do not want to share. Do not add `--include-mailboxes` unless a maintainer asks for it.
+      render: json
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I have not included mailbox exports, message contents, credentials, passwords, tokens or bearer headers.
+          required: true

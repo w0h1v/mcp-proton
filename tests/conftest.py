@@ -40,9 +40,13 @@ class ImapServer:
 def imap_server():
     port = _free_port()
     proc = subprocess.Popen(
-        [sys.executable, "-c", "import sys; from pymap.main import main; sys.exit(main())", "--port", str(port), "--host", "127.0.0.1",
+        [sys.executable, "-c", "import sys; from pymap.main import main; sys.exit(main())",
+         "--port", str(port), "--host", "127.0.0.1",
          "--no-service", "managesieve", "--no-service", "admin", "dict"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        # pymap otherwise calls socket.getfqdn() for every greeting, which takes
+        # seconds on macOS CI runners.
+        env={**os.environ, "FQDN": "localhost"},
     )
     deadline = time.time() + 15
     while time.time() < deadline:
@@ -96,11 +100,11 @@ def smtp_server():
         async def handle_DATA(self, server, session, envelope):  # noqa: N802
             state.messages.append((envelope.mail_from, list(envelope.rcpt_tos), envelope.content))
             if state.drop_after_data:
-                session.transport.close()
+                server.transport.close()
                 return "250 OK"
             return "250 OK queued"
 
-    ctl = Controller(Handler(), hostname="127.0.0.1", port=port,
+    ctl = Controller(Handler(), hostname="127.0.0.1", port=port, server_hostname="localhost",
                      auth_require_tls=False, auth_required=False)
     ctl.start()
     yield state
@@ -110,5 +114,9 @@ def smtp_server():
 @pytest.fixture(autouse=True)
 def _isolated_config(tmp_path, monkeypatch):
     monkeypatch.setenv("MCP_PROTON_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # Any real OS keyring access in tests fails fast instead of waiting on a prompt.
+    monkeypatch.setenv("PYTHON_KEYRING_BACKEND", "keyring.backends.fail.Keyring")
     monkeypatch.setenv("MCP_PROTON_TEST_SECRET", "demopass")
     os.environ.pop("MCP_PROTON_LIVE", None) if os.environ.get("MCP_PROTON_LIVE") != "1" else None

@@ -1,0 +1,33 @@
+name: Feature request
+description: Suggest a capability or improvement
+labels: ["feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        mcp-proton can only offer what Proton Mail Bridge exposes over IMAP/SMTP.
+        Contacts, Calendar, server-side filters and native scheduled send are outside Bridge.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The task, not the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Tool names, parameters, or behaviour you would like.
+  - type: dropdown
+    id: family
+    attributes:
+      label: Which policy family would this belong to?
+      options: [read, organize, drafts, send, permanent_delete, attachment_ingest, export, import, folder_delete, label_delete, automation, "not sure"]
+    validations:
+      required: true
+  - type: textarea
+    id: bridge
+    attributes:
+      label: Does Bridge support it?
+      description: Link Proton documentation or describe what you observed. Never paste mail content.

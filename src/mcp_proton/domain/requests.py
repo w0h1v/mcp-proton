@@ -7,10 +7,10 @@ import json
 from enum import StrEnum
 from typing import Any
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from .families import OperationFamily
-from .models import MessageHandle, Model
+from .models import MessageHandle, Model, canonical_inbox
 
 
 class Transport(StrEnum):
@@ -53,6 +53,11 @@ class OperationRequest(Model):
     payload: dict[str, Any] = Field(default_factory=dict)
     summary: str = ""
     idempotency_key: str | None = None
+
+    @field_validator("mailboxes")
+    @classmethod
+    def _canonical_mailboxes(cls, v: list[str]) -> list[str]:
+        return [canonical_inbox(m) for m in v]
 
     def digest(self) -> str:
         canonical = json.dumps(

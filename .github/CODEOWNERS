@@ -1,0 +1,9 @@
+# Default reviewers. Security-sensitive paths are listed explicitly so they always
+# get maintainer review even if the default changes.
+*                                   @w0h1v
+/src/mcp_proton/policy/             @w0h1v
+/src/mcp_proton/services/core.py    @w0h1v
+/src/mcp_proton/services/effects.py @w0h1v
+/src/mcp_proton/mcp/auth.py         @w0h1v
+/src/mcp_proton/bridge/tls.py       @w0h1v
+/.github/workflows/                 @w0h1v

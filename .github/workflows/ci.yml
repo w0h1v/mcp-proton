@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches-ignore: ["dependabot/**"]  # Dependabot branches are tested via their PRs
+  pull_request:
+
+# Read-only token by default. Jobs that need more must request it explicitly.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python-version: "3.11"
+          - os: ubuntu-latest
+            python-version: "3.12"
+          - os: ubuntu-latest
+            python-version: "3.13"
+          - os: macos-latest
+            python-version: "3.13"
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Create virtual environment
+        run: uv venv --python ${{ matrix.python-version }}
+
+      - name: Install with dev extras
+        run: uv pip install -e '.[dev]'
+
+      - name: Put the venv on PATH
+        run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Lint
+        run: ruff check src tests
+
+      - name: Type check
+        run: mypy
+
+      - name: Test (fake servers only)
+        run: pytest -q -ra --durations=20 -m "not live"
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Smoke-install the wheel in a fresh venv
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv venv --python ${{ matrix.python-version }} "$RUNNER_TEMP/smoke"
+          uv pip install --python "$RUNNER_TEMP/smoke/bin/python" dist/*.whl
+          "$RUNNER_TEMP/smoke/bin/mcp-proton" --help
+
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out (full history for the commit range)
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Organization-owned repositories also need GITLEAKS_LICENSE.
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+  dependency-review:
+    name: Dependency and license review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@v5
+        # Fails until "Dependency graph" is enabled in Settings > Code security.
+        # Non-blocking until then so it cannot mask the test result; remove this
+        # line once the graph is on.
+        continue-on-error: true
+        # Requires the dependency graph to be enabled for the repository.

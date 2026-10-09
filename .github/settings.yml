@@ -1,0 +1,23 @@
+# Repository settings as code. Applied automatically if the "Settings" GitHub App
+# (https://github.com/apps/settings) is installed; otherwise apply these by hand in
+# the repository's About panel and Settings page. Labels live in .github/labels.yml.
+repository:
+  name: mcp-proton
+  description: >-
+    Policy-controlled MCP server giving AI agents access to Proton Mail through
+    Proton Mail Bridge: Allow/Ask/Deny per action, owner approvals, audit journal.
+  homepage: https://w0h1v.github.io/mcp-proton/
+  topics: >-
+    mcp, model-context-protocol, mcp-server, fastmcp, proton-mail, protonmail,
+    proton-bridge, email, imap, smtp, ai-agents, llm-tools, agent-tools,
+    email-automation, privacy, human-in-the-loop, python
+  has_issues: true
+  has_discussions: true
+  has_wiki: false
+  has_projects: false
+  allow_squash_merge: true
+  allow_merge_commit: false
+  allow_rebase_merge: true
+  delete_branch_on_merge: true
+  enable_vulnerability_alerts: true
+  enable_automated_security_fixes: true

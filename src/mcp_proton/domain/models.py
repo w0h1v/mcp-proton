@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
@@ -22,6 +23,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from .errors import invalid
 
 _HANDLE_PREFIX = "h1."
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
+
+
+def canonical_inbox(name: str) -> str:
+    """INBOX is case-insensitive (RFC 3501); every other name is case-sensitive."""
+    return "INBOX" if name.upper() == "INBOX" else name
 
 
 class Model(BaseModel):
@@ -35,6 +42,11 @@ class MessageHandle(Model):
     mailbox: str
     uidvalidity: int = Field(ge=1)
     uid: int = Field(ge=1)
+
+    @field_validator("mailbox")
+    @classmethod
+    def _canonical_mailbox(cls, v: str) -> str:
+        return canonical_inbox(v)
 
     def token(self) -> str:
         raw = json.dumps(
@@ -89,6 +101,22 @@ class MailboxInfo(Model):
     writable: bool | None = None
 
 
+_LOCAL_BAD = re.compile(r"[\x00-\x20\x7f-\x9f\s\"(),:;<>\[\]\\@]")
+_DOMAIN_LABEL = re.compile(r"^(?!-)[A-Za-z0-9-]{1,63}(?<!-)$")
+
+
+def _is_addr_spec(v: str) -> bool:
+    """Strict ``local@domain``: exactly one ``@``, no whitespace/control characters or
+    ``"(),:;<>[]\\`` in the local part, dot-separated LDH labels in the domain (IDNA must
+    be punycode ``xn--``)."""
+    if v.count("@") != 1 or len(v) > 254:
+        return False
+    local, domain = v.split("@")
+    if not local or not domain or len(local) > 64 or _LOCAL_BAD.search(local):
+        return False
+    return all(_DOMAIN_LABEL.fullmatch(label) for label in domain.split("."))
+
+
 class Address(Model):
     name: str | None = None
     email: str
@@ -97,7 +125,7 @@ class Address(Model):
     @classmethod
     def _check_email(cls, v: str) -> str:
         v = v.strip()
-        if "@" not in v or any(c in v for c in "\r\n<>, "):
+        if not _is_addr_spec(v):
             raise ValueError("invalid email address")
         return v
 
@@ -181,8 +209,24 @@ class SearchQuery(Model):
     keyword: str | None = None
     header: dict[str, str] | None = None
     uid_range: str | None = None
-    any_of: list[SearchQuery] | None = None
+    any_of: list[SearchQuery] | None = Field(default=None, max_length=20)
     not_: SearchQuery | None = Field(default=None, alias="not")
+
+    @field_validator("from_", "to", "cc", "bcc", "subject", "body", "text", "keyword",
+                     "uid_range")
+    @classmethod
+    def _no_control_chars(cls, v: str | None) -> str | None:
+        if v is not None and _CONTROL_CHARS.search(v):
+            raise ValueError("must not contain control characters")
+        return v
+
+    @field_validator("header")
+    @classmethod
+    def _header_no_control_chars(cls, v: dict[str, str] | None) -> dict[str, str] | None:
+        for k, val in (v or {}).items():
+            if _CONTROL_CHARS.search(k) or _CONTROL_CHARS.search(val) or ":" in k:
+                raise ValueError("header names/values must not contain control characters")
+        return v
 
 
 class SearchResult(Model):

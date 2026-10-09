@@ -1,0 +1,16 @@
+From: Alice Example <alice@example.test>
+To: Bob <bob@example.test>
+Date: Tue, 07 Oct 2025 10:30:00 +0000
+Message-ID: <m1@example.test>
+Subject: Cut off
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="alt"
+
+--alt
+Content-Type: text/plain; charset=utf-8
+
+Truncated message body
+--alt
+Content-Type: text/html; charset=utf-8
+
+<p>never clo

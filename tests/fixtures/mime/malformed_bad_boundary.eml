@@ -1,0 +1,13 @@
+From: Alice Example <alice@example.test>
+To: Bob <bob@example.test>
+Date: Tue, 07 Oct 2025 10:30:00 +0000
+Message-ID: <m1@example.test>
+Subject: Broken boundary
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="declared"
+
+--other
+Content-Type: text/plain
+
+body text that never matches the declared boundary
+--other--

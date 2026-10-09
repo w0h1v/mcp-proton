@@ -1,0 +1,23 @@
+# actions/labeler v5: label pull requests by changed paths.
+"area: policy":
+  - changed-files: [{any-glob-to-any-file: ["src/mcp_proton/policy/**", "src/mcp_proton/services/core.py", "src/mcp_proton/storage/journal.py"]}]
+"area: bridge":
+  - changed-files: [{any-glob-to-any-file: ["src/mcp_proton/bridge/**"]}]
+"area: services":
+  - changed-files: [{any-glob-to-any-file: ["src/mcp_proton/services/**", "src/mcp_proton/domain/**"]}]
+"area: mcp":
+  - changed-files: [{any-glob-to-any-file: ["src/mcp_proton/mcp/**"]}]
+"area: admin":
+  - changed-files: [{any-glob-to-any-file: ["src/mcp_proton/admin/**"]}]
+"area: automation":
+  - changed-files: [{any-glob-to-any-file: ["src/mcp_proton/jobs/**"]}]
+"area: index":
+  - changed-files: [{any-glob-to-any-file: ["src/mcp_proton/index/**"]}]
+"area: ci":
+  - changed-files: [{any-glob-to-any-file: [".github/**"]}]
+documentation:
+  - changed-files: [{all-globs-to-all-files: ["**/*.md", "docs/**", "mkdocs.yml"]}]
+bridge-evidence:
+  - changed-files: [{any-glob-to-any-file: ["src/mcp_proton/compatibility.json"]}]
+capability:
+  - changed-files: [{any-glob-to-any-file: ["src/mcp_proton/services/inventory.py", "src/mcp_proton/services/effects.py"]}]

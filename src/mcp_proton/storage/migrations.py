@@ -130,6 +130,17 @@ def _m003_jobs(c: sqlite3.Connection) -> None:
     )
 
 
+def _m004_artifact_owner(c: sqlite3.Connection) -> None:
+    # Artifacts are usable only by the client that created them (NULL = owner only).
+    c.execute("ALTER TABLE artifacts ADD COLUMN client_id TEXT")
+
+
 register_migration("001_operations", _m001_operations)
 register_migration("002_events", _m002_events)
 register_migration("003_jobs", _m003_jobs)
+register_migration("004_artifact_owner", _m004_artifact_owner)
+
+# Optional feature schemas register from their own modules; import them here so
+# every Database() gets the full schema regardless of import order.
+from ..index import migrations as _index_migrations  # noqa: E402,F401
+from ..jobs import migrations as _jobs_migrations  # noqa: E402,F401

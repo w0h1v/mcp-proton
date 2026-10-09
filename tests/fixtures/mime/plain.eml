@@ -1,0 +1,16 @@
+From: "Example, Alice" <alice@example.test>
+To: Bob <bob@example.test>, carol@example.test
+Cc: Dave <dave@example.test>
+Reply-To: Support <support@example.test>
+Subject: Hello there
+Date: Tue, 07 Oct 2025 10:30:00 +0000
+Message-ID: <m1@example.test>
+In-Reply-To: <parent@example.test>
+References: <root@example.test> <parent@example.test>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+Hi Bob,
+
+This is a plain message.
+Second line.

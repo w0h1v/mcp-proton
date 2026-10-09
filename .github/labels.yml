@@ -1,0 +1,30 @@
+# Synced to the repository by .github/workflows/labels.yml. Edit here, not in the UI.
+# Type
+- {name: bug, color: d73a4a, description: "Something does not work as documented"}
+- {name: feature, color: a2eeef, description: "New functionality"}
+- {name: capability, color: 0e8a16, description: "Adds or changes a Bridge capability inventory row"}
+- {name: security, color: b60205, description: "Security-relevant change (report vulnerabilities privately)"}
+- {name: breaking, color: e11d21, description: "Changes tool schemas, preset membership, storage or permissions"}
+- {name: documentation, color: 0075ca, description: "Docs only"}
+- {name: question, color: d876e3, description: "Needs an answer, not a change"}
+- {name: dependencies, color: 0366d6, description: "Dependency updates"}
+- {name: skip-changelog, color: ededed, description: "Leave out of release notes"}
+# Bridge compatibility
+- {name: compatibility, color: fbca04, description: "Behaviour differs between Bridge versions or settings"}
+- {name: bridge-evidence, color: c2e0c6, description: "Adds live Bridge acceptance evidence"}
+- {name: unsupported-semantics, color: f9d0c4, description: "Operation whose Proton effect is not established"}
+# Areas (applied automatically to pull requests by path)
+- {name: "area: policy", color: 5319e7, description: "Presets, rules, constraints, approvals"}
+- {name: "area: bridge", color: 1d76db, description: "IMAP/SMTP adapters, MIME, TLS"}
+- {name: "area: services", color: 006b75, description: "Mail operations and the effect table"}
+- {name: "area: mcp", color: 7057ff, description: "MCP tools, resources, prompts, auth"}
+- {name: "area: admin", color: bfd4f2, description: "CLI, setup, review UI, probe"}
+- {name: "area: automation", color: c5def5, description: "Schedules, reminders, rules, webhooks, undo"}
+- {name: "area: index", color: d4c5f9, description: "Metadata cache and full-text index"}
+- {name: "area: ci", color: ededed, description: "Workflows and repository tooling"}
+# Triage
+- {name: good first issue, color: 7057ff, description: "Small, well-scoped, good for new contributors"}
+- {name: help wanted, color: 008672, description: "Maintainers would welcome a contribution"}
+- {name: needs-repro, color: fef2c0, description: "Needs redacted diagnostics or steps to reproduce"}
+- {name: duplicate, color: cfd3d7, description: "Already reported"}
+- {name: wontfix, color: ffffff, description: "Will not be changed"}

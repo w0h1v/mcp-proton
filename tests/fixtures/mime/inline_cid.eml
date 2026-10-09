@@ -1,0 +1,20 @@
+From: Alice Example <alice@example.test>
+To: Bob <bob@example.test>
+Date: Tue, 07 Oct 2025 10:30:00 +0000
+Message-ID: <m1@example.test>
+Subject: With logo
+MIME-Version: 1.0
+Content-Type: multipart/related; boundary="rel"
+
+--rel
+Content-Type: text/html; charset=utf-8
+
+<p>Logo: <img src="cid:logo@example.test"></p>
+--rel
+Content-Type: image/png
+Content-ID: <logo@example.test>
+Content-Disposition: inline; filename="logo.png"
+Content-Transfer-Encoding: base64
+
+iVBORw0KGgoAAAANSUhEUg==
+--rel--

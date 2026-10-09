@@ -14,6 +14,7 @@ approved payload twice. Approval consumption and execution results are durable.
 
 from __future__ import annotations
 
+import builtins
 import json
 import secrets
 from dataclasses import dataclass
@@ -138,7 +139,8 @@ class Journal:
     def list(self, *, status: OperationStatus | None = None, client_id: str | None = None,
              account: str | None = None, limit: int = 50, before: str | None = None
              ) -> list[OperationRecord]:
-        sql, params = "SELECT * FROM operations WHERE 1=1", []
+        sql = "SELECT * FROM operations WHERE 1=1"
+        params: builtins.list[Any] = []
         if status:
             sql += " AND status=?"
             params.append(status.value)
@@ -169,7 +171,7 @@ class Journal:
         sql = ("SELECT COUNT(*) FROM operations WHERE family='send' AND account=? AND "
                "created_at >= ? AND status IN ('executing','succeeded','partially_succeeded',"
                "'delivery_unknown')")
-        params: list[Any] = [account, _iso(since)]
+        params: builtins.list[Any] = [account, _iso(since)]
         if client_id:
             sql += " AND client_id=?"
             params.append(client_id)
@@ -179,7 +181,7 @@ class Journal:
     def _transition(self, op_id: str, from_states: set[OperationStatus], to: OperationStatus,
                     **fields: Any) -> bool:
         sets = ["status=?", "updated_at=?"]
-        params: list[Any] = [to.value, _iso(_now())]
+        params: builtins.list[Any] = [to.value, _iso(_now())]
         for k, v in fields.items():
             sets.append(f"{k}=?")
             params.append(v)
@@ -187,7 +189,8 @@ class Journal:
         params.extend([op_id, *[s.value for s in from_states]])
         with self.db.tx() as c:
             cur = c.execute(
-                f"UPDATE operations SET {', '.join(sets)} WHERE id=? AND status IN ({placeholders})",
+                f"UPDATE operations SET {', '.join(sets)} "
+                f"WHERE id=? AND status IN ({placeholders})",
                 tuple(params),
             )
             return cur.rowcount == 1
@@ -203,7 +206,8 @@ class Journal:
         ok = self._transition(op_id, {OperationStatus.PENDING}, to,
                               decided_at=_iso(_now()), decided_by=decided_by)
         if not ok:
-            raise MailError(ErrorCode.CONFLICT, "operation changed concurrently", operation_id=op_id)
+            raise MailError(ErrorCode.CONFLICT, "operation changed concurrently",
+                            operation_id=op_id)
         out = self.get(op_id)
         assert out is not None
         return out
@@ -240,8 +244,8 @@ class Journal:
         with self.db.tx() as c:
             c.execute("UPDATE operations SET message_id=? WHERE id=?", (message_id, op_id))
 
-    def record_items(self, op_id: str, items: list[ItemResult],
-                     prior_states: list[dict[str, Any] | None] | None = None) -> None:
+    def record_items(self, op_id: str, items: builtins.list[ItemResult],
+                     prior_states: builtins.list[dict[str, Any] | None] | None = None) -> None:
         with self.db.tx() as c:
             c.execute("DELETE FROM operation_items WHERE operation_id=?", (op_id,))
             for i, it in enumerate(items):
@@ -252,7 +256,7 @@ class Journal:
                      json.dumps(prior) if prior is not None else None),
                 )
 
-    def items(self, op_id: str) -> list[tuple[ItemResult, dict[str, Any] | None]]:
+    def items(self, op_id: str) -> builtins.list[tuple[ItemResult, dict[str, Any] | None]]:
         rows = self.db.query(
             "SELECT * FROM operation_items WHERE operation_id=? ORDER BY seq", (op_id,)
         )

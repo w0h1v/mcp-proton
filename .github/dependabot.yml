@@ -1,0 +1,18 @@
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+    groups:
+      dev-tools:
+        patterns: ["pytest*", "ruff", "mypy", "pymap", "aiosmtpd"]
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies", "area: ci"]
+    groups:
+      actions:
+        patterns: ["*"]

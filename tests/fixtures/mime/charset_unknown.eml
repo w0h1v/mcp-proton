@@ -1,0 +1,10 @@
+From: Alice Example <alice@example.test>
+To: Bob <bob@example.test>
+Date: Tue, 07 Oct 2025 10:30:00 +0000
+Message-ID: <m1@example.test>
+Subject: Weird charset
+MIME-Version: 1.0
+Content-Type: text/plain; charset=x-no-such-charset
+Content-Transfer-Encoding: 8bit
+
+plain ascii body

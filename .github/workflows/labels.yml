@@ -1,0 +1,41 @@
+name: Labels
+
+on:
+  push:
+    paths: [".github/labels.yml", ".github/workflows/labels.yml"]
+  workflow_dispatch:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: Sync repository labels
+    if: github.event_name != 'pull_request_target'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: crazy-max/ghaction-github-labeler@v5
+        with:
+          yaml-file: .github/labels.yml
+          skip-delete: true  # keep labels created by hand or by other tools
+
+  pr-areas:
+    name: Label pull request by area
+    # pull_request_target runs with the base branch's workflow and config; it never
+    # checks out or runs code from the pull request.
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/labeler@v5
+        with:
+          configuration-path: .github/labeler.yml

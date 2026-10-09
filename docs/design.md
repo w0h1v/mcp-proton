@@ -4,7 +4,7 @@
 
 Naming conventions: repository, distribution, and CLI command `mcp-proton`; Python package `mcp_proton`. An independent project for Proton Mail Bridge.
 
-Intended distribution: open source. This revision incorporates the [Opus 5.5 design review](mcp-proton-opus-5.5-review.md). Reviewer source observations are inputs to compatibility testing, not substitutes for live verification. Delivery is phased; the complete Bridge inventory remains the product target.
+Intended distribution: open source. This revision incorporates the Opus 5.5 design review (not included in this repository). Reviewer source observations are inputs to compatibility testing, not substitutes for live verification. Delivery is phased; the complete Bridge inventory remains the product target.
 
 ## Product contract
 

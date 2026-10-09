@@ -1,0 +1,23 @@
+# Example mcp-proton service config (config.toml). No secrets belong here:
+# passwords are referenced via keyring:, env: or file: (file must be mode 0600).
+storage_mode = "live"        # live | metadata | index (this release: live)
+retention_days = 30          # journal retention for `mcp-proton purge`
+
+[[accounts]]
+name = "main"
+address = "you@proton.example"
+username = "you@proton.example"        # Bridge username (shown in Bridge settings)
+secret_ref = "keyring:mcp-proton/main:you@proton.example"
+imap_host = "127.0.0.1"
+imap_port = 1143
+imap_security = "starttls"
+smtp_host = "127.0.0.1"
+smtp_port = 1025
+smtp_security = "starttls"
+# Pinned during `mcp-proton init` after you confirm Bridge's fingerprint:
+tls_fingerprint_sha256 = "<64 hex chars>"
+# Alternative: tls_ca_file = "/path/to/bridge-cert.pem"
+
+[http]
+host = "127.0.0.1"
+port = 8765
