@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+import anyio
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware import Middleware
@@ -62,6 +63,7 @@ from ..domain.requests import CallerContext, Transport
 from ..policy import engine
 from ..policy.model import PolicyConfig, Preset
 from ..policy.presets import AUTONOMOUS_WARNING
+from ..services.common import review_text
 from ..services.core import MailApp
 from ..storage.journal import OperationRecord
 
@@ -72,8 +74,9 @@ SESSION_IDLE_SECONDS = 8 * 3600
 SESSION_MAX_SECONDS = 24 * 3600
 MAX_SESSIONS = 20
 MAX_FORM_BYTES = 64 * 1024
-LOGIN_WINDOW_SECONDS = 60
-LOGIN_MAX_FAILURES = 5
+# The owner token is 256-bit and compared in constant time, so guessing is infeasible; a
+# small delay per failure is enough and nothing can lock the owner out.
+LOGIN_FAILURE_DELAY_SECONDS = 0.5
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 CSP = ("default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
@@ -284,8 +287,6 @@ class OwnerUi:
         self.public_origin = public_origin.rstrip("/") if public_origin else None
         self.secure_cookies = secure_cookies
         self.sessions = _Sessions()
-        self._failures: list[float] = []
-        self._fail_lock = threading.Lock()
         self.owner = CallerContext.owner(Transport.UI)
 
     # ------------------------------------------------------------ plumbing
@@ -369,26 +370,17 @@ class OwnerUi:
                 'size="48"> <button class="primary" type="submit">Sign in</button></p></form>')
         return HTMLResponse(_doc("Sign in", body), status_code=status)
 
-    def _rate_limited(self) -> bool:
-        now = time.monotonic()
-        with self._fail_lock:
-            self._failures = [t for t in self._failures if now - t < LOGIN_WINDOW_SECONDS]
-            return len(self._failures) >= LOGIN_MAX_FAILURES
-
     async def login(self, request: Request) -> Response:
         if not self._same_origin(request):
             return Response("Cross-origin request refused", status_code=403,
                             media_type="text/plain")
-        if self._rate_limited():
-            return self._login_form("Too many failed attempts; wait a minute.", 429)
         form = await self._form(request)
         if form is None:
             return Response("Bad form submission", status_code=400, media_type="text/plain")
         expected = (self.app.config.owner_token_sha256 or "").strip().lower()
         given = hashlib.sha256(form.get("token", "").strip().encode()).hexdigest()
         if not expected or not hmac.compare_digest(given, expected):
-            with self._fail_lock:
-                self._failures.append(time.monotonic())
+            await anyio.sleep(LOGIN_FAILURE_DELAY_SECONDS)
             return self._login_form("Invalid token.", 401)
         session = self.sessions.create()
         resp = self._back("/accounts")
@@ -664,8 +656,11 @@ class OwnerUi:
             manifest = json.dumps(p["attachments"], indent=2, default=str, ensure_ascii=False)
             out.append(f"<div class=mut>Attachments manifest</div><pre>{e(manifest)}</pre>")
         if p.get("forward"):
+            fwd = {k: v for k, v in p["forward"].items() if k != "review"}
             out.append("<div class=mut>Forwarded message</div>"
-                       f"<pre>{e(json.dumps(p['forward'], indent=2, default=str))}</pre>")
+                       f"<pre>{e(json.dumps(fwd, indent=2, default=str))}</pre>")
+        if (review := review_text(p)) is not None:
+            out.append(f"<div class=mut>Content under review</div><pre>{e(review)}</pre>")
         if req.targets:
             out.append(f"<div class=mut>Targets ({len(req.targets)})</div><pre>"
                        + e("\n".join(_target(t) for t in req.targets[:200]))

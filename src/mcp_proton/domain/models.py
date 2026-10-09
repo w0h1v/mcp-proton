@@ -26,6 +26,11 @@ _HANDLE_PREFIX = "h1."
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
 
 
+def canonical_inbox(name: str) -> str:
+    """INBOX is case-insensitive (RFC 3501); every other name is case-sensitive."""
+    return "INBOX" if name.upper() == "INBOX" else name
+
+
 class Model(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -37,6 +42,11 @@ class MessageHandle(Model):
     mailbox: str
     uidvalidity: int = Field(ge=1)
     uid: int = Field(ge=1)
+
+    @field_validator("mailbox")
+    @classmethod
+    def _canonical_mailbox(cls, v: str) -> str:
+        return canonical_inbox(v)
 
     def token(self) -> str:
         raw = json.dumps(
@@ -91,6 +101,22 @@ class MailboxInfo(Model):
     writable: bool | None = None
 
 
+_LOCAL_BAD = re.compile(r"[\x00-\x20\x7f-\x9f\s\"(),:;<>\[\]\\@]")
+_DOMAIN_LABEL = re.compile(r"^(?!-)[A-Za-z0-9-]{1,63}(?<!-)$")
+
+
+def _is_addr_spec(v: str) -> bool:
+    """Strict ``local@domain``: exactly one ``@``, no whitespace/control characters or
+    ``"(),:;<>[]\\`` in the local part, dot-separated LDH labels in the domain (IDNA must
+    be punycode ``xn--``)."""
+    if v.count("@") != 1 or len(v) > 254:
+        return False
+    local, domain = v.split("@")
+    if not local or not domain or len(local) > 64 or _LOCAL_BAD.search(local):
+        return False
+    return all(_DOMAIN_LABEL.fullmatch(label) for label in domain.split("."))
+
+
 class Address(Model):
     name: str | None = None
     email: str
@@ -99,7 +125,7 @@ class Address(Model):
     @classmethod
     def _check_email(cls, v: str) -> str:
         v = v.strip()
-        if "@" not in v or any(c in v for c in "\r\n<>, "):
+        if not _is_addr_spec(v):
             raise ValueError("invalid email address")
         return v
 

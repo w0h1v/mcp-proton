@@ -45,6 +45,8 @@ from . import effects
 from .common import (
     MAX_BATCH,
     bulk_status,
+    canonical_mailbox,
+    canonical_mailboxes,
     decode_cursor,
     encode_cursor,
     group_by_mailbox,
@@ -123,6 +125,28 @@ def release_settings(app: MailApp, caller: CallerContext) -> tuple[bool, bool]:
     return (all(c.release_bodies for c in cons), all(c.release_attachments for c in cons))
 
 
+_CONTENT_CRITERIA = ("body", "text", "header")
+
+
+def uses_content_criteria(query: SearchQuery) -> bool:
+    """True if the query matches on message content (body, text or headers) anywhere."""
+    if any(getattr(query, f) is not None for f in _CONTENT_CRITERIA):
+        return True
+    if query.not_ is not None and uses_content_criteria(query.not_):
+        return True
+    return any(uses_content_criteria(q) for q in query.any_of or [])
+
+
+def require_content_search_allowed(app: MailApp, caller: CallerContext, query: SearchQuery
+                                   ) -> None:
+    """Content searches are an oracle for text that must not be released: refuse
+    body/text/header criteria when bodies are not released to this caller."""
+    if not release_settings(app, caller)[0] and uses_content_criteria(query):
+        raise MailError(ErrorCode.CONSTRAINT_VIOLATION,
+                        "searching message content (body, text, header) is disabled by "
+                        "policy because bodies are not released")
+
+
 def mailbox_names(app: MailApp, account: str) -> set[str]:
     return {m.name for m in app.store(account).list_mailboxes()}
 
@@ -131,6 +155,7 @@ def list_messages(app: MailApp, caller: CallerContext, account: str, mailbox: st
                   limit: int = 50, cursor: str | None = None,
                   unread_only: bool = False) -> Page:
     """Newest first by UID. The cursor pins (UIDVALIDITY, last UID returned)."""
+    mailbox = canonical_mailbox(app, account, mailbox)
     app.authorize_read(caller, account, [mailbox], kind="messages.list")
     limit = _clamp_limit(app, limit)
     store = app.store(account)
@@ -221,8 +246,9 @@ def search(app: MailApp, caller: CallerContext, account: str, query: SearchQuery
     results merged newest first by internal date (UID order within a mailbox).
     Completeness is always ``unknown``: Bridge sync state cannot be established."""
     default_scope = not mailboxes
-    scope = list(dict.fromkeys(mailboxes)) if mailboxes else ["INBOX"]
+    scope = canonical_mailboxes(app, account, mailboxes) if mailboxes else ["INBOX"]
     app.authorize_read(caller, account, scope, kind="messages.search")
+    require_content_search_allowed(app, caller, query)
     limit = _clamp_limit(app, limit)
     store = app.store(account)
     qhash = hashlib.sha256(
@@ -421,9 +447,7 @@ def _resolve_dest(app: MailApp, account: str, spec: _Spec, dest: str | None) -> 
         name = dest or spec.dest_default
         if not name:
             raise invalid("a destination mailbox is required")
-        if name not in mailbox_names(app, account):
-            raise not_found("destination mailbox does not exist")
-        return name
+        return canonical_mailbox(app, account, name)
     return None
 
 
@@ -812,9 +836,10 @@ def bulk_preview(app: MailApp, caller: CallerContext, account: str, operation: s
         parsed = parse_handles(handles, account=account, max_items=MAX_BATCH)
     else:
         assert query is not None
-        scope = list(dict.fromkeys(mailboxes)) if mailboxes else ["INBOX"]
+        scope = canonical_mailboxes(app, account, mailboxes) if mailboxes else ["INBOX"]
         app.authorize_read(caller, account, scope, kind="bulk.preview")
-        parsed, truncated = _preview_handles(app, account, query, mailboxes, cap)
+        require_content_search_allowed(app, caller, query)
+        parsed, truncated = _preview_handles(app, account, query, scope, cap)
         if not parsed:
             return {"account": account, "operation": operation, "occurrences": 0,
                     "by_mailbox": [], "unique_messages": {"count": 0, "certainty": "heuristic",

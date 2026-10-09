@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -100,6 +101,9 @@ class MailApp:
         self._stores: dict[str, MailStore] = {}
         self._transports: dict[str, MailTransport] = {}
         self._lock = threading.RLock()
+        # Serializes decide -> journal insert/claim for sends so the daily limit is atomic
+        # (single-process design).
+        self._send_lock = threading.RLock()
         # Ensure all service modules registered their executors.
         from . import registry  # noqa: F401
 
@@ -145,10 +149,16 @@ class MailApp:
             self._stores.clear()
 
     # ------------------------------------------------------------ authorization
-    def _sends_today(self, req: OperationRequest, caller: CallerContext) -> int:
+    def _sends_today(self, req: OperationRequest, caller: CallerContext) -> tuple[int, int]:
+        """(sends on the account, sends by this client) in the last 24 hours."""
         if req.family is not OperationFamily.SEND:
-            return 0
-        return self.journal.sends_since(req.account, datetime.now(UTC) - timedelta(days=1))
+            return 0, 0
+        since = datetime.now(UTC) - timedelta(days=1)
+        return (self.journal.sends_since(req.account, since),
+                self.journal.sends_since(req.account, since, caller.client_id))
+
+    def _send_guard(self, req: OperationRequest) -> AbstractContextManager[Any]:
+        return self._send_lock if req.family is OperationFamily.SEND else nullcontext()
 
     def decide(self, caller: CallerContext, req: OperationRequest) -> engine.Decision:
         expected = family_of(req.kind)
@@ -156,7 +166,16 @@ class MailApp:
             raise MailError(ErrorCode.UNSUPPORTED, f"operation {req.kind!r} is not classified")
         if expected != req.family:
             raise MailError(ErrorCode.INTERNAL, "operation family mismatch", kind=req.kind)
-        return engine.evaluate(self.policy, caller, req, self._sends_today(req, caller))
+        account_sends, client_sends = self._sends_today(req, caller)
+        return engine.evaluate(self.policy, caller, req, account_sends,
+                               client_sends_today=client_sends)
+
+    def require_path(self, caller: CallerContext, family: OperationFamily, path: str) -> None:
+        """Refuse ``path`` unless inside the effective configured roots for ``family``.
+        Call before any stat/open/hash of a caller-supplied local path."""
+        if not engine.path_allowed(self.policy, caller, family, path):
+            raise MailError(ErrorCode.PATH_REJECTED,
+                            f"path outside configured {family.value} directories")
 
     def _raise_denied(self, d: engine.Decision, req: OperationRequest) -> None:
         code = ErrorCode(d.code or "policy_denied")
@@ -167,7 +186,7 @@ class MailApp:
                        mailboxes: list[str] | None = None, kind: str = "messages.read") -> None:
         """Reads (tools *and* resources) pass the same policy and identity checks."""
         req = OperationRequest(kind=kind, family=OperationFamily.READ, account=account,
-                               mailboxes=mailboxes or [])
+                               mailboxes=mailboxes or [])  # INBOX case-normalized by the model
         d = engine.evaluate(self.policy, caller, req)
         if d.action is Action.DENY:
             self._raise_denied(d, req)
@@ -186,14 +205,19 @@ class MailApp:
                     raise MailError(ErrorCode.CONFLICT,
                                     "idempotency key reused with a different request")
                 return self._outcome(prior)
-        d = self.decide(caller, req)
-        if d.action is Action.DENY:
-            self._raise_denied(d, req)
-        get_executor(req.kind)  # fail before journaling if unavailable
+        with self._send_guard(req):  # decide + insert atomically (daily send limit)
+            d = self.decide(caller, req)
+            if d.action is Action.DENY:
+                self._raise_denied(d, req)
+            get_executor(req.kind)  # fail before journaling if unavailable
+            if d.action is Action.ASK:
+                rec = self.journal.create(caller, req, OperationStatus.PENDING,
+                                          ttl_seconds=self.policy.approval_ttl_seconds,
+                                          reasons=d.reasons)
+            else:
+                rec = self.journal.create(caller, req, OperationStatus.EXECUTING,
+                                          reasons=d.reasons)
         if d.action is Action.ASK:
-            rec = self.journal.create(caller, req, OperationStatus.PENDING,
-                                      ttl_seconds=self.policy.approval_ttl_seconds,
-                                      reasons=d.reasons)
             if reviewer is not None:
                 decision = None
                 try:
@@ -206,7 +230,6 @@ class MailApp:
                         return self.resume(caller, rec.id)
                     rec = self.journal.get(rec.id) or rec
             return self._outcome(rec)
-        rec = self.journal.create(caller, req, OperationStatus.EXECUTING, reasons=d.reasons)
         return self._execute(rec)
 
     def resume(self, caller: CallerContext, op_id: str) -> OperationOutcome:
@@ -215,17 +238,20 @@ class MailApp:
             return self._outcome(rec)
         if rec.status is not OperationStatus.APPROVED:
             return self._outcome(rec)  # terminal or executing: report, never re-run
-        # Policy recheck: revocation, pauses and new Deny rules take effect now.
-        d = self.decide(caller if not caller.is_owner else self._original_caller(rec), rec.request)
-        if d.action is Action.DENY:
-            self.journal.cancel(rec.id)
-            self._raise_denied(d, rec.request)
-        if rec.request.digest() != rec.digest:
-            self.journal.cancel(rec.id)
-            raise MailError(ErrorCode.APPROVAL_INVALID, "stored request changed; request again")
-        if not self.journal.claim(rec.id, rec.digest):
-            cur = self.journal.get(rec.id) or rec
-            return self._outcome(cur)
+        with self._send_guard(rec.request):  # recheck + claim atomically (daily send limit)
+            # Policy recheck: revocation, pauses and new Deny rules take effect now.
+            d = self.decide(caller if not caller.is_owner else self._original_caller(rec),
+                            rec.request)
+            if d.action is Action.DENY:
+                self.journal.cancel(rec.id)
+                self._raise_denied(d, rec.request)
+            if rec.request.digest() != rec.digest:
+                self.journal.cancel(rec.id)
+                raise MailError(ErrorCode.APPROVAL_INVALID,
+                                "stored request changed; request again")
+            if not self.journal.claim(rec.id, rec.digest):
+                cur = self.journal.get(rec.id) or rec
+                return self._outcome(cur)
         claimed = self.journal.get(rec.id)
         assert claimed is not None
         return self._execute(claimed)

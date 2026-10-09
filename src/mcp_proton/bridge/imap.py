@@ -816,7 +816,7 @@ class ImapMailStore:
                 handle=handle.token(), mailbox=mailbox, uid=uid,
                 message_id=_text(env.message_id) if env else None,
                 subject=_decode_header_text(env.subject) if env else None,
-                from_=_addresses(env.from_) if env else [],
+                **{"from": _addresses(env.from_) if env else []},
                 to=_addresses(env.to) if env else [],
                 cc=_addresses(env.cc) if env else [],
                 date=env.date if env else None,

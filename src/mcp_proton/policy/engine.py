@@ -27,7 +27,19 @@ class Decision:
         return self.action is Action.ALLOW
 
 
+def _norm(name: str) -> str:
+    """INBOX is case-insensitive on IMAP servers; other names are case-sensitive."""
+    return "INBOX" if name.upper() == "INBOX" else name
+
+
+def _norm_pattern(pattern: str) -> str:
+    if pattern.endswith("/*"):
+        return _norm(pattern[:-2]) + "/*"
+    return _norm(pattern)
+
+
 def _mailbox_matches(pattern: str, mailbox: str) -> bool:
+    pattern, mailbox = _norm_pattern(pattern), _norm(mailbox)
     if pattern.endswith("/*"):
         prefix = pattern[:-2]
         return mailbox == prefix or mailbox.startswith(prefix + "/")
@@ -82,11 +94,17 @@ def _intersect_constraints(config: PolicyConfig, client: str) -> list[Constraint
 
 
 def _recipient_allowed(addr: str, allowed: Iterable[str]) -> bool:
-    addr = addr.lower()
+    """``@domain`` entries match that exact domain (not subdomains); other entries
+    match the full address. Comparison is case-insensitive. The address is split on its
+    single ``@``; anything else (``Address`` validates this) never matches."""
+    addr = addr.strip().lower()
+    if addr.count("@") != 1:
+        return False
+    _, domain = addr.split("@")
     for entry in allowed:
-        entry = entry.lower()
+        entry = entry.strip().lower()
         if entry.startswith("@"):
-            if addr.endswith(entry):
+            if entry[1:] == domain:
                 return True
         elif addr == entry:
             return True
@@ -113,12 +131,26 @@ _PATH_DIRS = {
 }
 
 
+def path_allowed(config: PolicyConfig, caller: CallerContext, family: OperationFamily,
+                 path: str) -> bool:
+    """True if ``path`` is inside the roots of *every* applicable constraint set (global and
+    the client's). Used to refuse a path before it is touched in any way."""
+    attr = _PATH_DIRS.get(family)
+    if attr is None:
+        return False
+    return all(path_within(path, getattr(c, attr))
+               for c in _intersect_constraints(config, caller.client_id))
+
+
 def check_constraints(config: PolicyConfig, caller: CallerContext, req: OperationRequest,
-                      sends_today: int = 0) -> str | None:
+                      sends_today: int = 0, client_sends_today: int | None = None) -> str | None:
     """Return a violation description, or None. Path constraints for draft
     attachments are checked by passing ``family=ATTACHMENT_INGEST`` paths via
     ``req.paths`` together with ``payload['_path_family']``."""
-    for c in _intersect_constraints(config, caller.client_id):
+    # The global limit counts every client's sends on the account; a client's own limit
+    # counts only that client's sends.
+    own = sends_today if client_sends_today is None else client_sends_today
+    for idx, c in enumerate(_intersect_constraints(config, caller.client_id)):
         if c.allowed_accounts is not None and req.account not in c.allowed_accounts:
             return f"account {req.account!r} outside allowed accounts"
         if c.allowed_mailboxes is not None:
@@ -135,7 +167,8 @@ def check_constraints(config: PolicyConfig, caller: CallerContext, req: Operatio
                 bad = [r for r in req.recipients if not _recipient_allowed(r, c.allowed_recipients)]
                 if bad:
                     return f"recipients outside allowed list: {', '.join(sorted(bad))}"
-            if c.max_sends_per_day is not None and sends_today >= c.max_sends_per_day:
+            count = sends_today if idx == 0 else own
+            if c.max_sends_per_day is not None and count >= c.max_sends_per_day:
                 return f"daily send limit {c.max_sends_per_day} reached"
         if req.paths:
             path_family = OperationFamily(req.payload.get("_path_family", req.family))
@@ -148,7 +181,8 @@ def check_constraints(config: PolicyConfig, caller: CallerContext, req: Operatio
 
 
 def evaluate(config: PolicyConfig, caller: CallerContext, req: OperationRequest,
-             sends_today: int = 0, now: datetime | None = None) -> Decision:
+             sends_today: int = 0, now: datetime | None = None,
+             client_sends_today: int | None = None) -> Decision:
     now = now or datetime.now(UTC)
     client_cfg = config.client(caller.client_id)
     if client_cfg is not None and client_cfg.revoked:
@@ -178,7 +212,7 @@ def evaluate(config: PolicyConfig, caller: CallerContext, req: OperationRequest,
                 worst = action
     if worst is Action.DENY:
         return Decision(Action.DENY, req.family, reasons, code="policy_denied")
-    violation = check_constraints(config, caller, req, sends_today)
+    violation = check_constraints(config, caller, req, sends_today, client_sends_today)
     if violation:
         code = "path_rejected" if "path" in violation else "constraint_violation"
         if "limit" in violation and "batch" not in violation:

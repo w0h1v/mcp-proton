@@ -152,10 +152,11 @@ def test_cookie_secure_over_https(app, cfg_dir):
     assert "secure" in r.headers["set-cookie"].lower()
 
 
-def test_login_is_rate_limited(client):
-    for _ in range(ui_mod.LOGIN_MAX_FAILURES):
+def test_bad_tokens_never_lock_out_the_owner(client, monkeypatch):
+    monkeypatch.setattr(ui_mod, "LOGIN_FAILURE_DELAY_SECONDS", 0)
+    for _ in range(20):
         assert _login(client, "bad").status_code == 401
-    assert _login(client).status_code == 429  # even the right token waits
+    assert _login(client).status_code == 303  # the correct token always works
 
 
 def test_logout_ends_session(authed):
@@ -359,3 +360,21 @@ def test_storage_page_reports_mode_and_encryption(authed, app):
     assert "Storage mode" in page.text and "live" in page.text
     assert "Encrypted at rest" in page.text and "False" in page.text
     assert "Bridge keeps its own cache" in page.text
+
+
+def test_pending_review_shows_draft_content_escaped(authed, app):
+    from mcp_proton.domain.families import OperationFamily
+    from mcp_proton.domain.requests import OperationRequest
+
+    review = {"subject": "s", "text": f"body {EVIL}", "html_text": "", "text_truncated": False,
+              "attachments": [{"filename": "<b>x.pdf</b>", "content_type": "application/pdf",
+                               "size": 3, "sha256": "ab" * 32}]}
+    req = OperationRequest(kind="drafts.send", family=OperationFamily.SEND, account="t",
+                           recipients=["bob@example.com"], payload={"review": review},
+                           summary="Send draft")
+    rec = app.journal.create(CallerContext(client_id="hermes"), req, OperationStatus.PENDING,
+                             ttl_seconds=600, reasons=[])
+    page = authed.get(f"/operations/{rec.id}")
+    assert "Content under review" in page.text
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in page.text and EVIL not in page.text
+    assert "&lt;b&gt;x.pdf&lt;/b&gt;" in page.text and "ab" * 32 in page.text

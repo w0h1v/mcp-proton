@@ -238,7 +238,7 @@ class Gateway:
             raise (self.resource_error(exc) if resource else self.tool_error(exc)) from exc
 
     async def write(self, ctx: Context, fn: Callable[[CallerContext], OperationOutcome]
-                    ) -> WriteResult:
+                    ) -> WriteResult:  # type: ignore[valid-type]  # alias over a FastMCP type
         """Run a write; offer elicitation review to a trusted client when pending."""
         try:
             caller = self.identity.caller()

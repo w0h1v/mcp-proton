@@ -128,14 +128,14 @@ def _load_message(app: MailApp, caller: CallerContext, handle: str
 
 def _submit(app: MailApp, caller: CallerContext, kind: str, out: OutgoingMessage, *,
             verb: str, idempotency_key: str | None, mailboxes: list[str] | None = None,
-            forward: dict[str, str] | None = None) -> OperationOutcome:
+            forward: dict[str, Any] | None = None) -> OperationOutcome:
     account = app.config.account(out.account)
     from_addr = sender_identity(account, out.from_)
     recipients = dedupe_addresses(out.all_recipients())
     if not recipients:
         raise invalid("at least one recipient is required")
     mime.build_message(out, from_addr=from_addr, message_id="<validate@invalid>")  # fail early
-    manifest = att.build_manifest(app, caller, list(out.attachments))
+    manifest = att.build_manifest(app, caller, list(out.attachments), out.account)
     local_paths = att.manifest_paths(manifest)
     domain = from_addr.email.rsplit("@", 1)[-1]
     payload: dict[str, Any] = {
@@ -194,11 +194,11 @@ def reply(app: MailApp, caller: CallerContext, handle: str, text: str | None = N
     body = text
     if quote and text is not None and orig.body is not None:
         body = f"{text}\n\n{mime.quote_text(orig)}"
-    out = OutgoingMessage(
-        account=h.account, **{"from": from_addr}, to=to, cc=cc,
-        subject=mime.reply_subject(orig.subject), text=body, html=html,
-        in_reply_to=in_reply_to, references=refs, attachments=list(attachments),
-    )
+    out = OutgoingMessage.model_validate({
+        "account": h.account, "from": from_addr, "to": to, "cc": cc,
+        "subject": mime.reply_subject(orig.subject), "text": body, "html": html,
+        "in_reply_to": in_reply_to, "references": refs, "attachments": list(attachments),
+    })
     return _submit(app, caller, KIND_REPLY, out, verb="Reply", idempotency_key=idempotency_key,
                    mailboxes=[h.mailbox])
 
@@ -211,13 +211,14 @@ def forward(app: MailApp, caller: CallerContext, handle: str, to: Sequence[Addre
     """Forward inline (header block + body; the original's attachments are not
     copied) or as an attached ``message/rfc822``."""
     h, raw, orig = _load_message(app, caller, handle)
-    forward_ref: dict[str, str] | None = None
+    forward_ref: dict[str, Any] | None = None
     if as_attachment:
         limit = att.max_attachment_bytes(app, caller)
         if len(raw) > limit:
             raise MailError(ErrorCode.TOO_LARGE,
                             f"original is {len(raw)} bytes, over the {limit} byte limit")
-        forward_ref = {"handle": h.token(), "sha256": hashlib.sha256(raw).hexdigest()}
+        forward_ref = {"handle": h.token(), "sha256": hashlib.sha256(raw).hexdigest(),
+                       "review": mime.review_block(raw)}
         body = text or ""
     else:
         inline = mime.forward_inline_text(orig)

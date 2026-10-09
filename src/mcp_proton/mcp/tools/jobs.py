@@ -97,7 +97,8 @@ def build(gw: Gateway) -> LocalProvider:
             description="scheduled_send | reminder | snooze | rule")] = None,
         status: Annotated[str | None, Field(
             description="active | paused | done | cancelled | failed")] = None,
-        account: AccountParam | None = None, limit: Limit = 50,
+        account: AccountParam | None = None,
+        limit: Limit = 50,  # type: ignore[valid-type]
     ) -> dict[str, Any]:
         return gw.read(lambda c: {"items": common.list_jobs(
             app, c, job_type=type, status=status, account=account, limit=limit)})

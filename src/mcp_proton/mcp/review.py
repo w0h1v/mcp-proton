@@ -51,6 +51,7 @@ from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 from ..domain.errors import ErrorCode, MailError
 from ..domain.models import OperationOutcome, OperationStatus
 from ..domain.requests import CallerContext
+from ..services.common import review_text
 from ..services.core import MailApp
 from ..storage.journal import OperationRecord
 
@@ -61,6 +62,7 @@ REVIEW_KEY = "review"
 CHOICES = ["approve", "deny"]
 ELICIT_TIMEOUT_SECONDS = 300.0
 _BODY_PREVIEW = 400
+_REVIEW_PREVIEW = 6000
 
 
 def enabled(app: MailApp, caller: CallerContext) -> bool:
@@ -94,6 +96,9 @@ def describe(rec: OperationRecord) -> str:
     if isinstance(body, str) and body:
         more = "..." if len(body) > _BODY_PREVIEW else ""
         lines.append("Body: " + body[:_BODY_PREVIEW] + more)
+    review = review_text(payload, limit=_REVIEW_PREVIEW)
+    if review:
+        lines.append(review)
     if rec.expires_at:
         lines.append(f"Expires: {rec.expires_at.isoformat()}")
     lines.append("Choose approve to carry this out exactly as shown, or deny.")

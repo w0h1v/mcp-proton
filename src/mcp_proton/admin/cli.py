@@ -28,6 +28,7 @@ from ..domain.families import OperationFamily
 from ..domain.requests import CallerContext, Transport
 from ..policy import engine
 from ..policy.model import Action, ClientConfig, Constraints, PolicyConfig, PolicyRule, Preset
+from ..services.common import review_text
 from ..services.core import MailApp
 from ..services.factory import build_app
 from ..storage.journal import OperationRecord
@@ -122,7 +123,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true")
     for nm in ("revoke", "unrevoke"):
         cl.add_parser(nm).add_argument("id")
-    p = cl.add_parser("review-channel")
+    p = cl.add_parser(
+        "review-channel",
+        help="how a client's approvals are collected (queue or elicitation)",
+        description="Set the review channel. WARNING: 'elicitation' trusts the client to relay "
+                    "the question to a person. Over stdio the client id is only a label, so "
+                    "every local process that can launch the server with that label is "
+                    "trusted to approve its own requests; in isolated deployments use "
+                    "'elicitation' only for authenticated HTTP clients.")
     p.add_argument("id")
     p.add_argument("channel", choices=["queue", "elicitation"])
 
@@ -279,10 +287,11 @@ class Cli:
     def cmd_accounts_list(self) -> int:
         cfg = load_service_config(self.dir)
         pol = self._policy()
-        rows = [{"name": x.name, "imap": f"{x.imap_host}:{x.imap_port}",
-                 "smtp": f"{x.smtp_host}:{x.smtp_port}", "security": x.imap_security.value,
-                 "tls_pinned": bool(x.tls_fingerprint_sha256),
-                 "paused": x.name in pol.paused_accounts} for x in cfg.accounts]
+        rows: list[dict[str, Any]] = [
+            {"name": x.name, "imap": f"{x.imap_host}:{x.imap_port}",
+             "smtp": f"{x.smtp_host}:{x.smtp_port}", "security": x.imap_security.value,
+             "tls_pinned": bool(x.tls_fingerprint_sha256),
+             "paused": x.name in pol.paused_accounts} for x in cfg.accounts]
         if self.a.json:
             _dump(rows)
         elif not rows:
@@ -452,9 +461,10 @@ class Cli:
 
     def cmd_clients_list(self) -> int:
         pol = self._policy()
-        rows = [{"id": c.client_id, "description": c.description, "revoked": c.revoked,
-                 "http_token": c.token_sha256 is not None, "review_channel": c.review_channel}
-                for c in pol.clients]
+        rows: list[dict[str, Any]] = [
+            {"id": c.client_id, "description": c.description, "revoked": c.revoked,
+             "http_token": c.token_sha256 is not None, "review_channel": c.review_channel}
+            for c in pol.clients]
         if self.a.json:
             _dump(rows)
         elif not rows:
@@ -554,6 +564,9 @@ class Cli:
             print("  policy:", "; ".join(rec.policy_reasons))
         print(f"  recipients: {', '.join(rec.request.recipients) or '-'}")
         print(f"  targets: {len(rec.request.targets)}")
+        if (review := review_text(rec.request.payload)) is not None:
+            print("  content under review (bound to this approval):")
+            print("\n".join("    " + ln for ln in review.splitlines()))
         print("  full request (this is exactly what will run):")
         print(json.dumps(rec.request.model_dump(mode="json"), indent=2, default=str,
                          ensure_ascii=False))

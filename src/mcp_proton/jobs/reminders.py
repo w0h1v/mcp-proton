@@ -22,7 +22,7 @@ from ..domain.errors import ErrorCode, MailError, invalid
 from ..domain.models import MailboxRole, MessageHandle, OperationOutcome, OperationStatus
 from ..domain.requests import CallerContext
 from ..services import messages
-from ..services.common import parse_handles
+from ..services.common import canonical_mailbox, parse_handles
 from ..services.core import MailApp
 from ..services.events import EventStore
 from . import common
@@ -156,6 +156,7 @@ def snooze(app: MailApp, caller: CallerContext, handles: list[str], until: datet
     now = now or utcnow()
     if when <= now:
         raise invalid("`until` is in the past")
+    folder = canonical_mailbox(app, account, folder)
     _check_folder(app, account, folder)
     store = app.store(account)
     for h in parsed:

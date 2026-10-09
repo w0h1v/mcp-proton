@@ -133,6 +133,10 @@ The command binds to loopback by default. The `ui` command imports a module (`ad
 
 The UI needs authentication, owner-only administration, and origin and CSRF checks, as the design requires (see `docs/design.md`). Confirm these in the version you run.
 
+## Elicitation review over stdio
+
+`mcp-proton clients review-channel <id> elicitation` makes the server ask the connecting client to approve its own pending operations. Over stdio the client id is only a label: the server cannot tell which process supplied it. **Setting `elicitation` for a stdio client id therefore trusts every local process that can launch the server with that label** to approve requests as that client. In an isolated deployment, use `elicitation` only for authenticated HTTP clients (bound to a token); keep stdio clients on the owner `queue`.
+
 ## Summary of guarantees
 
 - Personal local: policy governs mcp-proton calls only. It does not stop an agent with shell access in the same OS account.

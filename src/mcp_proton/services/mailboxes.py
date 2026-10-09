@@ -22,6 +22,7 @@ from ..policy import engine
 from ..policy.model import Action
 from ..storage.journal import OperationRecord
 from . import effects
+from .common import canonical_mailbox
 from .core import ExecResult, MailApp, executor
 from .effects import DomainOp, EffectPlan
 from .messages import DELETED, _cancelled, _chunks, _clear_cancel, mailbox_names
@@ -50,6 +51,7 @@ def list_mailboxes(app: MailApp, caller: CallerContext, account: str,
 
 
 def status(app: MailApp, caller: CallerContext, account: str, mailbox: str) -> MailboxInfo:
+    mailbox = canonical_mailbox(app, account, mailbox)
     app.authorize_read(caller, account, [mailbox], kind="mailboxes.status")
     return app.store(account).mailbox_status(mailbox)
 
@@ -189,6 +191,7 @@ def rename(app: MailApp, caller: CallerContext, account: str, mailbox: str, new_
            ) -> OperationOutcome:
     """Rename a user folder or label. ``new_name`` is a full path in the same namespace
     (``Folders/x``) or relative to it (``x``); renaming across namespaces is refused."""
+    mailbox = canonical_mailbox(app, account, mailbox)
     store = app.store(account)
     delim = _delimiter(app, account)
     if mailbox not in mailbox_names(app, account):
@@ -256,6 +259,7 @@ def delete_folder(app: MailApp, caller: CallerContext, account: str, mailbox: st
                   ) -> OperationOutcome:
     """Delete a user folder. System folders are refused. A folder holding messages (or whose
     count is unknown) additionally requires ``permanent_delete``."""
+    mailbox = canonical_mailbox(app, account, mailbox)
     store = app.store(account)
     delim = _delimiter(app, account)
     names = mailbox_names(app, account)
@@ -298,6 +302,7 @@ def _exec_delete_folder(app: MailApp, rec: OperationRecord) -> ExecResult:
 def delete_label(app: MailApp, caller: CallerContext, account: str, mailbox: str
                  ) -> OperationOutcome:
     """Delete a label. Messages keep their location; they only lose the label."""
+    mailbox = canonical_mailbox(app, account, mailbox)
     store = app.store(account)
     if mailbox not in mailbox_names(app, account):
         raise not_found("mailbox does not exist")
@@ -325,6 +330,7 @@ def _exec_delete_label(app: MailApp, rec: OperationRecord) -> ExecResult:
 def subscribe(app: MailApp, caller: CallerContext, account: str, mailbox: str,
               subscribed: bool) -> OperationOutcome:
     """Set the IMAP subscription state of a mailbox (organizational; no mail is touched)."""
+    mailbox = canonical_mailbox(app, account, mailbox)
     if mailbox not in mailbox_names(app, account):
         raise not_found("mailbox does not exist")
     req = OperationRequest(
@@ -374,6 +380,7 @@ def empty(app: MailApp, caller: CallerContext, account: str, mailbox: str) -> Op
     The UID list is snapshotted now and stored in the request; the executor expunges
     only those UIDs, so mail that arrives before an approval is resumed survives.
     """
+    mailbox = canonical_mailbox(app, account, mailbox)
     store = app.store(account)
     if mailbox not in mailbox_names(app, account):
         raise not_found("mailbox does not exist")

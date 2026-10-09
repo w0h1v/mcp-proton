@@ -25,7 +25,7 @@ from ..domain.errors import MailError
 from ..domain.families import OperationFamily, register_kind
 from ..domain.models import Address, MailboxRole, MessageHandle, Model, SearchQuery
 from ..domain.requests import CallerContext
-from .common import parse_handles
+from .common import canonical_mailboxes, parse_handles
 from .core import MailApp
 
 KIND_GET = register_kind("conversations.get", OperationFamily.READ)
@@ -338,7 +338,7 @@ def get_conversation(app: MailApp, caller: CallerContext, handle: str,
     app.authorize_read(caller, account, [seed_handle.mailbox], kind=KIND_GET)
     limit = max(1, min(int(limit), 500))
     if mailboxes:
-        scope = list(dict.fromkeys(mailboxes))
+        scope = canonical_mailboxes(app, account, mailboxes)
         app.authorize_read(caller, account, scope, kind=KIND_GET)
     else:
         scope = _default_mailboxes(app, caller, account, seed_handle.mailbox)

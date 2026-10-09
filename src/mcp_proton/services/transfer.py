@@ -45,7 +45,7 @@ from ..policy import engine
 from ..storage.journal import OperationRecord
 from . import attachments as att
 from . import effects
-from .common import parse_handles
+from .common import canonical_mailbox, parse_handles
 from .core import ExecResult, MailApp, executor
 
 KIND_IMPORT_EML = "imports.eml"
@@ -199,10 +199,11 @@ def _clean_flags(flags: Sequence[str] | None) -> list[str]:
     return out
 
 
-def _eml_files(paths: Sequence[str]) -> list[Path]:
+def _eml_files(app: MailApp, caller: CallerContext, paths: Sequence[str]) -> list[Path]:
     files: list[Path] = []
     for raw in paths:
         real = Path(os.path.realpath(os.path.expanduser(raw)))
+        app.require_path(caller, OperationFamily.IMPORT, str(real))  # before any stat
         if real.is_dir():
             files.extend(sorted(p for p in real.iterdir() if p.suffix.lower() == ".eml"))
         elif real.is_file():
@@ -212,6 +213,8 @@ def _eml_files(paths: Sequence[str]) -> list[Path]:
     if not files:
         raise invalid("no .eml files to import")
     resolved = [Path(os.path.realpath(f)) for f in files]  # symlinks must stay in scope
+    for f in resolved:
+        app.require_path(caller, OperationFamily.IMPORT, str(f))
     return list(dict.fromkeys(resolved))
 
 
@@ -222,8 +225,7 @@ def _import_request(app: MailApp, caller: CallerContext, kind: str, account: str
                     ) -> OperationOutcome:
     app.config.account(account)
     store = app.store(account)
-    if mailbox not in {m.name for m in store.list_mailboxes()}:
-        raise not_found("target mailbox does not exist")
+    mailbox = canonical_mailbox(app, account, mailbox)
     effects.plan(effects.DomainOp.IMPORT, dest=store.role_of(mailbox))
 
     if resume_manifest:
@@ -234,6 +236,7 @@ def _import_request(app: MailApp, caller: CallerContext, kind: str, account: str
     entries: list[dict[str, Any]] = []
     total = 0
     for f in files:
+        app.require_path(caller, OperationFamily.IMPORT, str(f))  # before stat/open/hash
         size = f.stat().st_size
         if not mbox and size > MAX_IMPORT_MESSAGE_BYTES:
             raise MailError(ErrorCode.TOO_LARGE, "message file is too large to import")
@@ -262,7 +265,8 @@ def import_eml(app: MailApp, caller: CallerContext, account: str, paths: list[st
                skip_duplicates: bool = True, resume_manifest: str | None = None,
                idempotency_key: str | None = None) -> OperationOutcome:
     """Import ``.eml`` files (or directories of them) into ``mailbox``."""
-    return _import_request(app, caller, KIND_IMPORT_EML, account, _eml_files(paths), False,
+    files = _eml_files(app, caller, paths)
+    return _import_request(app, caller, KIND_IMPORT_EML, account, files, False,
                            mailbox, preserve_date, flags, skip_duplicates, resume_manifest,
                            idempotency_key)
 
@@ -273,6 +277,7 @@ def import_mbox(app: MailApp, caller: CallerContext, account: str, path: str, ma
                 idempotency_key: str | None = None) -> OperationOutcome:
     """Import every message of one mbox file into ``mailbox``."""
     real = Path(os.path.realpath(os.path.expanduser(path)))
+    app.require_path(caller, OperationFamily.IMPORT, str(real))  # before any stat
     if not real.is_file():
         raise not_found("import path does not exist")
     return _import_request(app, caller, KIND_IMPORT_MBOX, account, [real], True, mailbox,
@@ -382,12 +387,12 @@ def _import_one(store: Any, account: str, mailbox: str, label: str, key: str, ra
     manifest.set(key, "appending", message_id=mid)
     internal = (message_date(data) or datetime.now(UTC)) if p["preserve_date"] else None
     res = store.append(mailbox, data, flags=p["flags"] or None, internal_date=internal)
-    handle = None
+    new_handle: str | None = None
     if res.uidvalidity is not None and res.uid is not None:
-        handle = MessageHandle(account=account, mailbox=mailbox, uidvalidity=res.uidvalidity,
-                               uid=res.uid).token()
-    manifest.set(key, "imported", message_id=mid, handle=handle)
-    return ItemResult(target=label, status="succeeded", new_handle=handle)
+        new_handle = MessageHandle(account=account, mailbox=mailbox, uidvalidity=res.uidvalidity,
+                                   uid=res.uid).token()
+    manifest.set(key, "imported", message_id=mid, handle=new_handle)
+    return ItemResult(target=label, status="succeeded", new_handle=new_handle)
 
 
 # ------------------------------------------------------------------ export

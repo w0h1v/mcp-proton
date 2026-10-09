@@ -17,10 +17,17 @@ from typing import Any, Literal
 from pydantic import Field, field_validator, model_validator
 
 from ..domain.errors import ErrorCode, MailError, invalid, not_found
-from ..domain.models import MessageSummary, Model, OperationOutcome, OperationStatus, SearchQuery
+from ..domain.models import (
+    MessageSummary,
+    Model,
+    OperationOutcome,
+    OperationStatus,
+    SearchQuery,
+    canonical_inbox,
+)
 from ..domain.requests import CallerContext
 from ..services import messages
-from ..services.common import MAX_BATCH
+from ..services.common import MAX_BATCH, canonical_mailbox
 from ..services.core import MailApp
 from . import common
 from .common import job_caller
@@ -78,6 +85,16 @@ class Rule(Model):
     actions: list[RuleAction] = Field(min_length=1, max_length=5)
     trigger: bool = False  # also run on new mail (message_added events)
     trigger_mailboxes: list[str] = Field(default_factory=lambda: ["INBOX"])
+
+    @field_validator("mailbox")
+    @classmethod
+    def _canonical_mailbox(cls, v: str) -> str:
+        return canonical_inbox(v)
+
+    @field_validator("trigger_mailboxes")
+    @classmethod
+    def _canonical_triggers(cls, v: list[str]) -> list[str]:
+        return [canonical_inbox(m) for m in v]
 
     @field_validator("actions")
     @classmethod
@@ -139,6 +156,7 @@ def _prefilter(m: RuleMatch) -> SearchQuery | None:
 def find_matches(app: MailApp, caller: CallerContext, account: str, mailbox: str, m: RuleMatch,
                  limit: int = SCAN_LIMIT) -> tuple[list[MessageSummary], int, bool]:
     """(matching summaries newest first, messages scanned, truncated)."""
+    mailbox = canonical_mailbox(app, account, mailbox)
     app.authorize_read(caller, account, [mailbox], kind="rules.preview")
     store = app.store(account)
     q = _prefilter(m)

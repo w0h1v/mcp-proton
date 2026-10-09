@@ -30,6 +30,7 @@ from ..domain.families import register_kind as _register
 from ..domain.models import Address, MessageHandle, Model, SearchQuery, SearchResult
 from ..domain.requests import CallerContext
 from ..services import messages
+from ..services.common import canonical_mailboxes
 from ..services.core import MailApp
 from .store import IndexStore, load_addrs, now_iso, require_enabled
 
@@ -102,7 +103,7 @@ def _readable(app: MailApp, caller: CallerContext, account: str,
     """(readable mailboxes, number excluded by policy). Account-level denial raises."""
     app.authorize_read(caller, account, None, kind=kind)  # paused / revoked / not onboarded
     if requested:
-        candidates = list(dict.fromkeys(requested))
+        candidates = canonical_mailboxes(app, account, requested, must_exist=False)
     else:
         rows = app.db.query("SELECT mailbox FROM idx_mailboxes WHERE account=? ORDER BY mailbox",
                             (account,))
@@ -220,6 +221,8 @@ def save_search(app: MailApp, caller: CallerContext, account: str, name: str,
                 query: SearchQuery | str, mailboxes: list[str] | None = None) -> SavedSearch:
     """Create or replace ``name``. A ``SearchQuery`` runs live over IMAP; a string is
     full-text over the local index."""
+    if mailboxes:
+        mailboxes = canonical_mailboxes(app, account, mailboxes)
     app.authorize_read(caller, account, mailboxes, kind=KIND_SAVED)
     name = _check_name(name)
     if isinstance(query, SearchQuery):

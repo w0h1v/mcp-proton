@@ -33,6 +33,7 @@ from ..domain.errors import ErrorCode, MailError, invalid
 from ..domain.families import OperationFamily, register_kind
 from ..domain.models import MailboxRole, MessageHandle, Model
 from ..domain.requests import CallerContext
+from .common import canonical_mailbox
 from .core import MailApp
 
 log = logging.getLogger(__name__)
@@ -587,6 +588,8 @@ def reconcile_now(app: MailApp, caller: CallerContext, account: str,
     """Reconcile one mailbox (or the whole watch scope) immediately.
 
     Only reads mail state and writes our own journal, hence a read-kind."""
+    if mailbox:
+        mailbox = canonical_mailbox(app, account, mailbox)
     app.authorize_read(caller, account, [mailbox] if mailbox else None, kind=KIND_RECONCILE)
     rec = _reconciler(app)
     reports = [rec.reconcile(account, mailbox)] if mailbox else rec.reconcile_all(account)

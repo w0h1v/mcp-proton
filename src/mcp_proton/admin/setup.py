@@ -112,6 +112,7 @@ def gather_account(args: argparse.Namespace, pr: Prompter, taken: set[str],
     smtp_host = args.smtp_host or pr.ask("Bridge SMTP host", imap_host)
     smtp_port = args.smtp_port or int(pr.ask("Bridge SMTP port", "1025") or 1025)
     security = _security(args)
+    assert imap_host
     if security is Security.NONE and not (tls.is_loopback(imap_host)
                                           and tls.is_loopback(smtp_host or "")):
         raise SetupError("--insecure-loopback-plaintext requires loopback hosts")

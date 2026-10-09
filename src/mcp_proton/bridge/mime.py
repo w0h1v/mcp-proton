@@ -24,6 +24,7 @@ from __future__ import annotations
 import contextlib
 import email
 import email.policy
+import hashlib
 import re
 import secrets
 from collections.abc import Sequence
@@ -621,6 +622,33 @@ def extract_draft_payload(raw: bytes) -> dict[str, Any]:
         "html": html,
         "in_reply_to": _in_reply_to(msg),
         "references": _references(msg),
+    }
+
+
+REVIEW_TEXT_CHARS = 20_000
+MAX_REVIEW_ATTACHMENTS = 50
+
+
+def review_block(raw: bytes, limit: int = REVIEW_TEXT_CHARS) -> dict[str, Any]:
+    """What an approver must see for the exact bytes that will be sent: headers, the
+    (bounded) text and HTML-as-text, and each attachment's name, type, size and digest."""
+    msg = _parse(raw)
+    text, html = _bodies(msg)
+    atts = [
+        {"filename": i.filename, "content_type": i.content_type, "size": i.size,
+         "sha256": hashlib.sha256(_part_bytes(p)).hexdigest()}
+        for i, p in ((_info(pid, p), p) for pid, p in _leaves(msg) if _is_attachment(p))
+    ][:MAX_REVIEW_ATTACHMENTS]
+    date = _date(msg)
+    return {
+        "from": [a.formatted() for a in _addresses(msg, "From")],
+        "to": [a.formatted() for a in _addresses(msg, "To")],
+        "subject": _hdr(msg, "Subject") or "",
+        "date": date.isoformat() if date else None,
+        "text": (text or "")[:limit],
+        "text_truncated": len(text or "") > limit,
+        "html_text": html_to_text(html)[:limit] if html else "",
+        "attachments": atts,
     }
 
 

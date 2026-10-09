@@ -148,9 +148,10 @@ def _addresses(values: Sequence[Any] | None) -> list[Address]:
 
 
 def _out_from_fields(account: str, f: dict[str, Any]) -> OutgoingMessage:
-    return OutgoingMessage.model_validate({"account": account, **{
-        k: f[k] for k in ("from", "to", "cc", "bcc", "reply_to", "subject", "text", "html",
-                          "in_reply_to", "references") if k in f}})
+    data: dict[str, Any] = {"account": account}
+    data.update({k: f[k] for k in ("from", "to", "cc", "bcc", "reply_to", "subject", "text",
+                                   "html", "in_reply_to", "references") if k in f})
+    return OutgoingMessage.model_validate(data)
 
 
 def _with_ingest(payload: dict[str, Any], manifest: list[dict[str, Any]]) -> list[str]:
@@ -172,7 +173,7 @@ def create_draft(app: MailApp, caller: CallerContext, out: OutgoingMessage,
     mailbox = _drafts_mailbox(app, out.account)
     mime.build_message(out, from_addr=from_addr, message_id="<validate@invalid>",
                        include_bcc_header=True)  # fail early on malformed headers
-    manifest = att.build_manifest(app, caller, list(out.attachments))
+    manifest = att.build_manifest(app, caller, list(out.attachments), out.account)
     payload: dict[str, Any] = {
         "mailbox": mailbox,
         "from": from_addr.model_dump(),
@@ -271,7 +272,7 @@ def update_draft(app: MailApp, caller: CallerContext, handle: str, changes: dict
         else (ArtifactAttachment if "artifact_id" in i else LocalAttachment).model_validate(i)
         for i in changes.get("add_attachments") or []
     ]
-    manifest = att.build_manifest(app, caller, add_items)
+    manifest = att.build_manifest(app, caller, add_items, h.account)
 
     # The author's From is carried over unchanged; identity is enforced when sending.
     from_addr = (Address(**fields["from"]) if fields["from"]
@@ -441,6 +442,7 @@ def send_draft(app: MailApp, caller: CallerContext, handle: str,
         "message_id": message_id, "from": from_addr.model_dump(),
         "to": fields["to"], "cc": fields["cc"], "bcc": fields["bcc"],
         "subject": fields["subject"], "envelope_recipients": recipients,
+        "review": mime.review_block(raw),  # shown to the approver; bound by the digest
     }
     n = len(recipients)
     req = OperationRequest(

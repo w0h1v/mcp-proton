@@ -241,7 +241,7 @@ def schedule_send(app: MailApp, caller: CallerContext, *,
         if not recipients:
             raise invalid("at least one recipient is required")
         mime.build_message(message, from_addr=from_addr, message_id="<validate@invalid>")
-        manifest = att.build_manifest(app, caller, list(message.attachments))
+        manifest = att.build_manifest(app, caller, list(message.attachments), account)
         send = message.model_dump(by_alias=True, mode="json", exclude={"attachments"})
         send["attachment_manifest"] = manifest
         spec.update(mode="content", send=send, content_sha256=_canonical_sha(send))
@@ -275,7 +275,7 @@ def _verify_attachments(ctx: JobContext, send: dict[str, Any]
     stored = send.get("attachment_manifest", [])
     items = _attachment_items(stored)
     try:
-        current = att.build_manifest(ctx.app, ctx.caller, items)
+        current = att.build_manifest(ctx.app, ctx.caller, items, ctx.job.account)
     except MailError as exc:
         if exc.code in (ErrorCode.NOT_FOUND, ErrorCode.PATH_REJECTED):
             raise MailError(ErrorCode.CONFLICT,

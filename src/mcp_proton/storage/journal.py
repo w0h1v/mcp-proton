@@ -139,7 +139,8 @@ class Journal:
     def list(self, *, status: OperationStatus | None = None, client_id: str | None = None,
              account: str | None = None, limit: int = 50, before: str | None = None
              ) -> list[OperationRecord]:
-        sql, params = "SELECT * FROM operations WHERE 1=1", []
+        sql = "SELECT * FROM operations WHERE 1=1"
+        params: builtins.list[Any] = []
         if status:
             sql += " AND status=?"
             params.append(status.value)

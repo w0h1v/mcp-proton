@@ -239,20 +239,27 @@ def fetch_to_artifact(app: MailApp, caller: CallerContext, handle: str, part_id:
     with app.db.tx() as c:
         c.execute(
             "INSERT INTO artifacts (id, account, source_handle, part_id, filename, content_type,"
-            " size, path, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            " size, path, created_at, expires_at, client_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (artifact_id, h.account, h.token(), part_id, filename, info.content_type,
-             len(data), str(path), now.isoformat(), expires.isoformat()),
+             len(data), str(path), now.isoformat(), expires.isoformat(), caller.client_id),
         )
     return {"artifact_id": artifact_id, "filename": filename,
             "content_type": info.content_type, "size": len(data),
             "sha256": hashlib.sha256(data).hexdigest(), "expires_at": expires.isoformat()}
 
 
-def _artifact_row(app: MailApp, artifact_id: str) -> Any:
+def _artifact_row(app: MailApp, artifact_id: str, *, caller: CallerContext | None = None,
+                  account: str | None = None) -> Any:
+    """Look up an artifact. With ``caller``/``account`` the artifact must belong to that
+    account and client (the owner may use any); otherwise it is ``not_found``."""
     rows = app.db.query("SELECT * FROM artifacts WHERE id=?", (artifact_id,))
     if not rows:
         raise not_found("unknown artifact")
     row = rows[0]
+    if caller is not None:
+        foreign_client = not caller.is_owner and row["client_id"] != caller.client_id
+        if foreign_client or (account is not None and row["account"] != account):
+            raise not_found("unknown artifact")
     if row["expires_at"] and datetime.fromisoformat(row["expires_at"]) <= datetime.now(UTC):
         raise not_found("artifact has expired")
     return row
@@ -293,10 +300,14 @@ def _guess_type(filename: str, explicit: str | None) -> str:
     return mimetypes.guess_type(filename)[0] or "application/octet-stream"
 
 
-def _entry_source(app: MailApp, item: LocalAttachment | ArtifactAttachment,
+def _entry_source(app: MailApp, caller: CallerContext, account: str | None,
+                  item: LocalAttachment | ArtifactAttachment,
                   limit: int) -> tuple[dict[str, Any], bytes]:
+    entry: dict[str, Any]
     if isinstance(item, LocalAttachment):
         real = Path(os.path.realpath(item.path))
+        # Path policy first: a path outside the ingest roots is never stat'ed or read.
+        app.require_path(caller, OperationFamily.ATTACHMENT_INGEST, str(real))
         if not real.is_file():
             raise MailError(ErrorCode.NOT_FOUND, "attachment file does not exist")
         data = _read_limited(real, limit)
@@ -304,7 +315,7 @@ def _entry_source(app: MailApp, item: LocalAttachment | ArtifactAttachment,
         entry = {"source": "local", "path": str(real), "filename": filename,
                  "content_type": _guess_type(filename, item.content_type)}
     else:
-        row = _artifact_row(app, item.artifact_id)
+        row = _artifact_row(app, item.artifact_id, caller=caller, account=account)
         data = _read_limited(Path(row["path"]), limit)
         filename = sanitize_filename(item.filename or row["filename"])
         entry = {"source": "artifact", "artifact_id": item.artifact_id, "filename": filename,
@@ -316,13 +327,14 @@ def _entry_source(app: MailApp, item: LocalAttachment | ArtifactAttachment,
 
 
 def build_manifest(app: MailApp, caller: CallerContext,
-                   items: list[LocalAttachment | ArtifactAttachment]) -> list[dict[str, Any]]:
+                   items: list[LocalAttachment | ArtifactAttachment],
+                   account: str | None = None) -> list[dict[str, Any]]:
     """Request-time manifest (JSON-safe) for outgoing attachments."""
     if len(items) > MAX_OUTGOING_ATTACHMENTS:
         raise MailError(ErrorCode.LIMIT_EXCEEDED,
                         f"at most {MAX_OUTGOING_ATTACHMENTS} attachments per message")
     limit = max_attachment_bytes(app, caller)
-    return [_entry_source(app, it, limit)[0] for it in items]
+    return [_entry_source(app, caller, account, it, limit)[0] for it in items]
 
 
 def manifest_paths(manifest: list[dict[str, Any]]) -> list[str]:
@@ -331,13 +343,13 @@ def manifest_paths(manifest: list[dict[str, Any]]) -> list[str]:
 
 
 def resolve_attachments(app: MailApp, caller: CallerContext,
-                        items: list[LocalAttachment | ArtifactAttachment]
-                        ) -> list[ResolvedAttachment]:
+                        items: list[LocalAttachment | ArtifactAttachment],
+                        account: str | None = None) -> list[ResolvedAttachment]:
     """Read attachments now (no later verification)."""
     limit = max_attachment_bytes(app, caller)
     out = []
     for it in items:
-        entry, data = _entry_source(app, it, limit)
+        entry, data = _entry_source(app, caller, account, it, limit)
         out.append(ResolvedAttachment(entry["filename"], entry["content_type"], data,
                                       entry["inline_cid"]))
     return out
