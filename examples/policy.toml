@@ -1,0 +1,33 @@
+# Example owner policy (policy.toml). Keep this file outside the agent's OS permissions.
+# Until `preset` is set, all access is denied.
+preset = "assistant"          # reader | assistant | autonomous | custom
+approval_ttl_seconds = 900
+paused_accounts = []
+
+[constraints]
+allowed_recipients = ["@example.com"]   # exact addresses or @domain
+max_batch_size = 50
+max_sends_per_day = 20
+export_dirs = ["~/mcp-proton-exports"]
+
+# Per-scope overrides: most specific wins; at equal specificity Deny > Ask > Allow.
+[[rules]]
+family = "send"
+action = "allow"
+client = "newsletter-bot"
+account = "main"
+
+[[rules]]
+family = "permanent_delete"
+action = "deny"
+mailbox = "Archive"
+
+[[clients]]
+client_id = "hermes"
+description = "Hermes agent (stdio label)"
+review_channel = "queue"
+
+[[clients]]
+client_id = "newsletter-bot"
+description = "HTTP client; token_sha256 is created by `mcp-proton clients add --http-token`"
+# token_sha256 = "<sha256 of bearer token>"

@@ -110,5 +110,7 @@ def smtp_server():
 @pytest.fixture(autouse=True)
 def _isolated_config(tmp_path, monkeypatch):
     monkeypatch.setenv("MCP_PROTON_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("MCP_PROTON_TEST_SECRET", "demopass")
     os.environ.pop("MCP_PROTON_LIVE", None) if os.environ.get("MCP_PROTON_LIVE") != "1" else None
