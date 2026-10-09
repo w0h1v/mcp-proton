@@ -7,7 +7,7 @@ This roadmap follows the phased delivery in `docs/design.md`. Phases control rel
 - The code for the Phase 0 to Phase 5 scope is in this repository.
 - **None of it is verified against a live Proton Mail Bridge.** All tests use fake IMAP and SMTP servers.
 - **Nothing is released.** There is no published package and no tagged version.
-- **The license is not yet chosen.** Apache-2.0 is the proposed option. It has not been adopted, and the repository has no LICENSE file yet.
+- **License: Apache-2.0.** Runtime dependencies are Apache-2.0, MIT or BSD-3-Clause (checked 2026-10-09).
 - The compatibility matrix in `docs/compatibility.md` has no live Bridge evidence. Every operation is `unverified`.
 
 ## Phases
@@ -25,7 +25,7 @@ This roadmap follows the phased delivery in `docs/design.md`. Phases control rel
 
 These items are separate execution steps from the design work:
 
-1. Choose and add the license, and check dependency-license compatibility.
+1. ~~Choose and add the license, and check dependency-license compatibility.~~ Done: Apache-2.0.
 2. Verify the phase exit evidence against a dedicated Bridge test account with `mcp-proton probe`, review the results, and record them in the packaged `src/mcp_proton/compatibility.json` and `docs/compatibility.md`. Fix the evidence-file location mismatch first (see `docs/compatibility.md`).
 3. Set the enforcement contact in `CODE_OF_CONDUCT.md` and confirm private vulnerability reporting in `SECURITY.md`.
 4. Confirm the repository owner and the package name.

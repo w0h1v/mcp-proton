@@ -4,7 +4,7 @@ An MCP server that gives AI agents access to Proton Mail through [Proton Mail Br
 
 Independent project. Not affiliated with or endorsed by Proton AG.
 
-**Status: alpha, unreleased.** Everything in the design is implemented and tested against fake IMAP/SMTP servers. **Nothing has been verified against a real Proton Mail Bridge yet.** Every capability reports as `unverified` until you run the compatibility probe against a dedicated test account (see [Compatibility](#compatibility)). A license has not been chosen yet.
+**Status: alpha, unreleased.** Everything in the design is implemented and tested against fake IMAP/SMTP servers. **Nothing has been verified against a real Proton Mail Bridge yet.** Every capability reports as `unverified` until you run the compatibility probe against a dedicated test account (see [Compatibility](#compatibility)).
 
 ## Requirements
 
@@ -126,3 +126,7 @@ The probe creates its own folders, label and synthetic messages, records how Bri
 See [CONTRIBUTING.md](CONTRIBUTING.md). Tests run against fake IMAP (pymap) and SMTP (aiosmtpd) servers; they do not need a Proton account and are not Bridge evidence. Live tests are opt-in: `MCP_PROTON_LIVE=1 MCP_PROTON_LIVE_ACCOUNT=<name> pytest -m live`.
 
 Design: [docs/design.md](docs/design.md). Roadmap: [docs/roadmap.md](docs/roadmap.md). Security reports: [SECURITY.md](SECURITY.md).
+
+## License
+
+[Apache License 2.0](LICENSE). See [NOTICE](NOTICE).

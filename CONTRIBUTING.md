@@ -48,9 +48,9 @@ Participation is governed by [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ## Third-party code and provenance
 
-Mailpouch is a feature reference only. Do not copy code, tests, fixtures or documentation from Mailpouch or from any other project unless you can show its provenance and license, and you add the required notice in the same pull request. Write new code from the design in `docs/design.md` and from Proton's public documentation.
+Mailpouch is a feature reference only. Do not copy code, tests, fixtures or documentation from Mailpouch or from any other project unless you can show its provenance and license, and you add the required notice in the same pull request. By contributing, you agree that your contribution is licensed under Apache-2.0 (section 5 of the license). Write new code from the design in `docs/design.md` and from Proton's public documentation.
 
-If you add a dependency, check that its license is compatible with the project license. The license is not yet chosen (see `docs/roadmap.md`). The dependency review workflow reports new dependencies on pull requests.
+If you add a dependency, check that its license is compatible with the project license, Apache-2.0. Copyleft licenses (GPL, AGPL, LGPL) need a maintainer decision first. The dependency review workflow reports new dependencies on pull requests.
 
 ## Security issues
 

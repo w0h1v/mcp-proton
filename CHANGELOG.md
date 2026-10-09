@@ -7,6 +7,7 @@ All notable changes are recorded here. The project follows semantic versioning f
 Not released. Implemented and tested against fake IMAP/SMTP servers only; not yet verified against a live Proton Mail Bridge.
 
 ### Added
+- Licensed under Apache-2.0.
 - Policy engine with Reader, Assistant, Autonomous and Custom presets; per-client, per-account and per-mailbox rules; temporary grants; scope, recipient, path, batch and daily-send constraints.
 - Durable operation journal with an approval workflow (`approval_pending`, owner approval, `operations_resume`), atomic execution claims and idempotency keys.
 - An effect table that classifies each mail operation by its effect on Proton's model (label removal vs permanent deletion, and so on).
