@@ -96,7 +96,7 @@ def smtp_server():
         async def handle_DATA(self, server, session, envelope):  # noqa: N802
             state.messages.append((envelope.mail_from, list(envelope.rcpt_tos), envelope.content))
             if state.drop_after_data:
-                session.transport.close()
+                server.transport.close()
                 return "250 OK"
             return "250 OK queued"
 
