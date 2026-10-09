@@ -1,0 +1,77 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mcp-proton"
+version = "0.1.0a1"
+description = "MCP server giving agents policy-controlled access to Proton Mail through Proton Mail Bridge"
+readme = "README.md"
+requires-python = ">=3.11"
+# License is an explicit owner decision before the first public release (see docs/design.md).
+authors = [{ name = "mcp-proton contributors" }]
+keywords = ["mcp", "proton", "email", "imap", "smtp", "agents"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+  "Topic :: Communications :: Email",
+]
+dependencies = [
+  "fastmcp>=4.1.0,<4.2",
+  "pydantic>=2.10,<3",
+  "imapclient>=3.0,<5",
+  "keyring>=25,<26",
+  "platformdirs>=4,<5",
+  "tomli-w>=1.0,<2",
+  "nh3>=0.2.17,<1",
+  "starlette>=0.40",
+  "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio>=0.24",
+  "pymap>=0.36",
+  "aiosmtpd>=1.4",
+  "ruff>=0.6",
+  "mypy>=1.11",
+]
+
+[project.scripts]
+mcp-proton = "mcp_proton.admin.cli:main"
+
+[project.urls]
+Documentation = "https://github.com/w0h1v/mcp-proton/tree/main/docs"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mcp_proton"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/mcp_proton", "tests", "docs", "README.md", "CHANGELOG.md", "pyproject.toml"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S", "SIM"]
+ignore = ["S101", "S608"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "B"]
+
+[tool.mypy]
+python_version = "3.11"
+packages = ["mcp_proton"]
+mypy_path = "src"
+ignore_missing_imports = true
+check_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+  "live: requires a real Proton Mail Bridge and dedicated test account (opt-in via MCP_PROTON_LIVE=1)",
+]
