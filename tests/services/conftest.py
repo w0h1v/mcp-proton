@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from mcp_proton.config import AccountConfig, ServiceConfig, Security
+from mcp_proton.config import AccountConfig, Security, ServiceConfig
 from mcp_proton.domain.requests import CallerContext
 from mcp_proton.policy.model import Constraints, PolicyConfig, Preset
 from mcp_proton.services.core import MailApp

@@ -98,7 +98,7 @@ def _unsupported(op: DomainOp, src: R | None, dst: R | None, why: str) -> MailEr
 def plan(op: DomainOp, source: R | None = None, dest: R | None = None,
          *, non_empty: bool | None = None) -> EffectPlan:
     """Return the expected effects of ``op`` or raise ``unsupported_semantics``."""
-    O = DomainOp  # noqa: N806 - local alias for readability
+    O = DomainOp  # noqa: N806, E741 - local alias for readability
     if op in (O.MOVE, O.ARCHIVE, O.TRASH, O.RESTORE, O.SPAM, O.NOT_SPAM):
         if source not in LOCATIONS:
             raise _unsupported(op, source, dest, "source must be a location mailbox "

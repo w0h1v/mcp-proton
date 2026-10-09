@@ -187,7 +187,8 @@ class Journal:
         params.extend([op_id, *[s.value for s in from_states]])
         with self.db.tx() as c:
             cur = c.execute(
-                f"UPDATE operations SET {', '.join(sets)} WHERE id=? AND status IN ({placeholders})",
+                f"UPDATE operations SET {', '.join(sets)} "
+                f"WHERE id=? AND status IN ({placeholders})",
                 tuple(params),
             )
             return cur.rowcount == 1
@@ -203,7 +204,8 @@ class Journal:
         ok = self._transition(op_id, {OperationStatus.PENDING}, to,
                               decided_at=_iso(_now()), decided_by=decided_by)
         if not ok:
-            raise MailError(ErrorCode.CONFLICT, "operation changed concurrently", operation_id=op_id)
+            raise MailError(ErrorCode.CONFLICT, "operation changed concurrently",
+                            operation_id=op_id)
         out = self.get(op_id)
         assert out is not None
         return out

@@ -40,7 +40,8 @@ class ImapServer:
 def imap_server():
     port = _free_port()
     proc = subprocess.Popen(
-        [sys.executable, "-c", "import sys; from pymap.main import main; sys.exit(main())", "--port", str(port), "--host", "127.0.0.1",
+        [sys.executable, "-c", "import sys; from pymap.main import main; sys.exit(main())",
+         "--port", str(port), "--host", "127.0.0.1",
          "--no-service", "managesieve", "--no-service", "admin", "dict"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )

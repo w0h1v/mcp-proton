@@ -133,3 +133,7 @@ def _m003_jobs(c: sqlite3.Connection) -> None:
 register_migration("001_operations", _m001_operations)
 register_migration("002_events", _m002_events)
 register_migration("003_jobs", _m003_jobs)
+
+# Optional feature schemas register from their own modules; import them here so
+# every Database() gets the full schema regardless of import order.
+from ..index import migrations as _index_migrations  # noqa: E402,F401

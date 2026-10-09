@@ -176,6 +176,19 @@ def build_parser() -> argparse.ArgumentParser:
                    help="merge observed results into the evidence file after review")
     p.add_argument("--reviewed-by", default="owner")
 
+    ix = sub.add_parser("index", help="local metadata/full-text index (non-live storage modes)"
+                        ).add_subparsers(dest="sub", required=True)
+    p = ix.add_parser("sync")
+    p.add_argument("--account")
+    p.add_argument("--mailbox")
+    p = ix.add_parser("purge")
+    p.add_argument("--account")
+    p.add_argument("--older-than-days", type=int)
+    p.add_argument("--include-saved-searches", action="store_true")
+    ix.add_parser("export").add_argument("path", type=Path)
+    p = sub.add_parser("storage", help="storage report (sizes, row counts, retention)")
+    p.add_argument("--json", action="store_true")
+
     sub.add_parser("ui-token", help="create the owner token for the local review UI")
     p = sub.add_parser("ui", help="run the local owner review UI (loopback)")
     p.add_argument("--host", default="127.0.0.1")
@@ -668,6 +681,59 @@ class Cli:
             print(f"Recorded {n} observation(s) in {path}")
         return 0
 
+    def cmd_index_sync(self) -> int:
+        from ..index import Indexer
+
+        app = self._owner_app()
+        try:
+            idx = Indexer(app)
+            accounts = [self.a.account] if self.a.account else [x.name for x in app.config.accounts]
+            for acct in accounts:
+                if self.a.mailbox:
+                    print(idx.sync(acct, self.a.mailbox))
+                else:
+                    print(idx.sync_all(acct))
+        finally:
+            app.close()
+        return 0
+
+    def cmd_index_purge(self) -> int:
+        from ..index import purge
+
+        app = self._owner_app()
+        try:
+            older = (datetime.now(UTC) - timedelta(days=self.a.older_than_days)
+                     if self.a.older_than_days else None)
+            print(purge(app, _owner(), self.a.account, older_than=older,
+                        include_saved_searches=self.a.include_saved_searches))
+        finally:
+            app.close()
+        return 0
+
+    def cmd_index_export(self) -> int:
+        from ..index import export_index
+
+        app = self._owner_app()
+        try:
+            print(export_index(app, _owner(), self.a.path))
+        finally:
+            app.close()
+        return 0
+
+    def cmd_storage(self) -> int:
+        from ..index import storage_report
+
+        app = self._owner_app()
+        try:
+            report = storage_report(app, _owner())
+        finally:
+            app.close()
+        if self.a.json:
+            _dump(report)
+        else:
+            print(json.dumps(report, indent=2, default=str))
+        return 0
+
     def cmd_ui_token(self) -> int:
         token = secrets.token_urlsafe(32)
         cfg = load_service_config(self.dir)
@@ -679,12 +745,14 @@ class Cli:
 
     def cmd_ui(self) -> int:
         try:
-            from .ui import run_ui
+            from .ui import UiSetupError, run_ui
         except ImportError as e:
             raise CliError(f"the review UI is not available in this install ({e})") from e
         app = self._owner_app()
         try:
             run_ui(app, host=self.a.host, port=self.a.port)
+        except UiSetupError as e:
+            raise CliError(str(e)) from e
         finally:
             app.close()
         return 0
