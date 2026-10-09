@@ -166,6 +166,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--host")
     p.add_argument("--port", type=int)
 
+    p = sub.add_parser("probe", help="Phase 0 compatibility probe against a DEDICATED test account")
+    p.add_argument("account")
+    p.add_argument("--yes-dedicated-test-account", action="store_true",
+                   help="confirm this account holds no mail you care about")
+    p.add_argument("--send-to", help="address you control, to probe SMTP and Sent filing")
+    p.add_argument("--out", type=Path, help="write the JSON report here")
+    p.add_argument("--record", action="store_true",
+                   help="merge observed results into the evidence file after review")
+    p.add_argument("--reviewed-by", default="owner")
+
+    sub.add_parser("ui-token", help="create the owner token for the local review UI")
+    p = sub.add_parser("ui", help="run the local owner review UI (loopback)")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8766)
+
     p = sub.add_parser("client-config", help="print an MCP client configuration")
     p.add_argument("kind", choices=client_config.KINDS)
     p.add_argument("--client-id", default="default")
@@ -618,6 +633,58 @@ class Cli:
         port = self.a.port or app.config.http.port
         try:
             run_server(app, transport=self.a.transport, host=host, port=port)
+        finally:
+            app.close()
+        return 0
+
+    def cmd_probe(self) -> int:
+        from ..bridge.imap import open_store
+        from ..bridge.smtp import open_transport
+        from ..config import config_dir
+        from . import probe
+
+        if not self.a.yes_dedicated_test_account:
+            raise CliError("the probe creates and deletes mailboxes and messages; run it only "
+                           "against a dedicated test account and pass "
+                           "--yes-dedicated-test-account")
+        cfg = load_service_config(self.dir)
+        acct = cfg.account(self.a.account)
+        store = open_store(acct)
+        try:
+            prober = probe.Prober(acct, store, open_transport(acct) if self.a.send_to else None,
+                                  send_to=self.a.send_to)
+            report = prober.run()
+        finally:
+            store.close()
+        text = report.to_json()
+        if self.a.out:
+            self.a.out.write_text(text)
+            print(f"Report written to {self.a.out}")
+        else:
+            print(text)
+        if self.a.record:
+            path = (self.dir or config_dir()) / "compatibility.json"
+            n = probe.record_evidence(report, path, self.a.reviewed_by)
+            print(f"Recorded {n} observation(s) in {path}")
+        return 0
+
+    def cmd_ui_token(self) -> int:
+        token = secrets.token_urlsafe(32)
+        cfg = load_service_config(self.dir)
+        cfg.owner_token_sha256 = hashlib.sha256(token.encode()).hexdigest()
+        save_service_config(cfg, self.dir)
+        print("Owner UI token (shown once, only its hash is stored):")
+        print(f"  {token}")
+        return 0
+
+    def cmd_ui(self) -> int:
+        try:
+            from .ui import run_ui
+        except ImportError as e:
+            raise CliError(f"the review UI is not available in this install ({e})") from e
+        app = self._owner_app()
+        try:
+            run_ui(app, host=self.a.host, port=self.a.port)
         finally:
             app.close()
         return 0

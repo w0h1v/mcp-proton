@@ -15,6 +15,7 @@ Advertised IMAP extensions do not establish Bridge support; only evidence does.
 
 from __future__ import annotations
 
+import contextlib
 import json
 from dataclasses import dataclass, field
 from importlib import resources
@@ -91,14 +92,32 @@ ROWS: tuple[InventoryRow, ...] = (
 )
 
 
-def load_evidence() -> dict[str, Any]:
-    """Recorded live-acceptance evidence shipped with the package."""
+def _read_json(text: str) -> dict[str, Any]:
     try:
-        text = resources.files("mcp_proton").joinpath("compatibility.json").read_text()
         data = json.loads(text)
-        return data if isinstance(data, dict) else {}
-    except (FileNotFoundError, json.JSONDecodeError, ModuleNotFoundError):
+    except json.JSONDecodeError:
         return {}
+    return data if isinstance(data, dict) else {}
+
+
+def load_evidence() -> dict[str, Any]:
+    """Live-acceptance evidence: shipped with the package, plus evidence the owner
+    recorded locally with ``mcp-proton probe --record`` (config dir)."""
+    from ..config import config_dir
+
+    merged: dict[str, Any] = {"operations": {}}
+    sources: list[str] = []
+    with contextlib.suppress(FileNotFoundError, ModuleNotFoundError):
+        sources.append(resources.files("mcp_proton").joinpath("compatibility.json").read_text())
+    local = config_dir() / "compatibility.json"
+    if local.exists():
+        sources.append(local.read_text())
+    for text in sources:
+        for op, entry in _read_json(text).get("operations", {}).items():
+            tgt = merged["operations"].setdefault(op, {"versions": [], "evidence": []})
+            tgt["versions"] = sorted(set(tgt["versions"]) | set(entry.get("versions", [])))
+            tgt["evidence"].extend(entry.get("evidence", []))
+    return merged
 
 
 def report(server_capabilities: list[str] | None, bridge_version: str | None
@@ -108,9 +127,7 @@ def report(server_capabilities: list[str] | None, bridge_version: str | None
     out = []
     for row in ROWS:
         missing = [r for r in row.requires if r not in caps] if server_capabilities else []
-        if not row.implemented:
-            status = "unavailable"
-        elif missing:
+        if not row.implemented or missing:
             status = "unavailable"
         else:
             ev = evidence.get(row.operation, {})

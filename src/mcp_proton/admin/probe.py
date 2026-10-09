@@ -1,0 +1,363 @@
+"""Phase 0 compatibility probe: observe real Bridge semantics and record evidence.
+
+Owner-only. Runs against a **dedicated test account** and creates its own
+``Folders/mcp-proton-probe-*`` and ``Labels/mcp-proton-probe-*`` mailboxes with
+synthetic messages, then removes them. It never touches existing messages.
+
+Each probe records what was *observed*; it does not assert what Bridge should
+do. The owner reviews the JSON report and, with ``--record``, merges entries
+into the evidence file consulted by the capability inventory. Observations can
+depend on Bridge version, settings and remote feature flags, so they carry the
+version, date and configuration and must be rerun on Bridge updates.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import json
+import platform
+import secrets
+import smtplib
+import time
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+from ..bridge.ports import MailStore, MailTransport
+from ..config import AccountConfig
+from ..domain.errors import MailError
+from ..domain.models import MailboxRole
+
+PROBE_PREFIX = "mcp-proton-probe"
+
+
+@dataclass
+class Observation:
+    probe: str
+    operation: str  # matches an inventory "operation" when it is acceptance evidence
+    outcome: str  # "observed" | "error" | "skipped"
+    observed: dict[str, Any] = field(default_factory=dict)
+    note: str | None = None
+
+
+@dataclass
+class ProbeReport:
+    account: str
+    started_at: str
+    bridge_id: dict[str, str] | None
+    bridge_version: str | None
+    capabilities: list[str]
+    configuration: dict[str, Any]
+    observations: list[Observation] = field(default_factory=list)
+    finished_at: str | None = None
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self), indent=2, default=str)
+
+
+def _raw(subject: str, frm: str, to: str, date: datetime | None = None,
+         message_id: str | None = None) -> tuple[bytes, str]:
+    mid = message_id or f"<{secrets.token_hex(10)}@{PROBE_PREFIX}.invalid>"
+    d = (date or datetime.now(UTC)).strftime("%a, %d %b %Y %H:%M:%S +0000")
+    raw = (f"From: {frm}\r\nTo: {to}\r\nSubject: {subject}\r\nDate: {d}\r\n"
+           f"Message-ID: {mid}\r\nMIME-Version: 1.0\r\n"
+           f"Content-Type: text/plain; charset=utf-8\r\n\r\nmcp-proton compatibility probe\r\n")
+    return raw.encode(), mid
+
+
+class Prober:
+    def __init__(self, account: AccountConfig, store: MailStore,
+                 transport: MailTransport | None = None, send_to: str | None = None,
+                 sent_wait: float = 30.0, log: Callable[[str], None] = print) -> None:
+        self.account = account
+        self.store = store
+        self.transport = transport
+        self.send_to = send_to
+        self.sent_wait = sent_wait
+        self.log = log
+        tag = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
+        caps = store.capabilities(refresh=True)
+        delim = caps.delimiter or "/"
+        self.folder = f"Folders{delim}{PROBE_PREFIX}-{tag}"
+        self.folder2 = f"Folders{delim}{PROBE_PREFIX}-{tag}-b"
+        self.label = f"Labels{delim}{PROBE_PREFIX}-{tag}"
+        sid = caps.server_id or {}
+        self.report = ProbeReport(
+            account=account.name, started_at=datetime.now(UTC).isoformat(),
+            bridge_id=sid or None,
+            bridge_version=sid.get("version") or sid.get("Version"),
+            capabilities=caps.server_capabilities,
+            configuration={"address_mode": account.address_mode, "imap_port": account.imap_port,
+                           "smtp_port": account.smtp_port, "platform": platform.platform(),
+                           "special_folders": caps.special_folders, "delimiter": caps.delimiter},
+        )
+
+    # ---------------------------------------------------------------- helpers
+    def _uids_for(self, mailbox: str | None, mid: str) -> list[int] | None:
+        if mailbox is None:
+            return None
+        try:
+            return self.store.find_by_message_id(mailbox, mid)[1]
+        except MailError:
+            return None
+
+    def _where(self, mid: str) -> dict[str, list[int] | None]:
+        """Which probe-relevant mailboxes currently contain the Message-ID."""
+        boxes = {"folder": self.folder, "folder2": self.folder2, "label": self.label}
+        for role in (MailboxRole.TRASH, MailboxRole.ARCHIVE, MailboxRole.ALL_MAIL,
+                     MailboxRole.INBOX, MailboxRole.SENT, MailboxRole.DRAFTS):
+            boxes[role.value] = self.store.mailbox_for_role(role)  # type: ignore[assignment]
+        return {k: self._uids_for(v, mid) for k, v in boxes.items() if v}
+
+    def _append(self, mailbox: str, subject: str, **kw: Any) -> tuple[int, int, str]:
+        raw, mid = _raw(subject, self.account.address, self.account.address, **kw)
+        res = self.store.append(mailbox, raw)
+        if res.uid is None or res.uidvalidity is None:
+            uv, uids = self.store.find_by_message_id(mailbox, mid)
+            return uv, uids[-1], mid
+        return res.uidvalidity, res.uid, mid
+
+    def _run(self, probe: str, operation: str, fn: Callable[[], dict[str, Any]],
+             note: str | None = None) -> None:
+        self.log(f"probe: {probe}")
+        try:
+            obs = Observation(probe, operation, "observed", fn(), note)
+        except _Skip:
+            raise
+        except MailError as e:
+            obs = Observation(probe, operation, "error", {"error": e.to_dict()}, note)
+        except Exception as e:  # noqa: BLE001 - record and continue with other probes
+            obs = Observation(probe, operation, "error", {"error": type(e).__name__}, note)
+        self.report.observations.append(obs)
+
+    # ---------------------------------------------------------------- probes
+    def probe_mailboxes(self) -> dict[str, Any]:
+        boxes = self.store.list_mailboxes(with_counts=False)
+        return {"count": len(boxes),
+                "roles": sorted({b.role.value for b in boxes}),
+                "special_folders": self.store.capabilities().special_folders,
+                "subscribed_known": any(b.subscribed is not None for b in boxes)}
+
+    def probe_flags(self) -> dict[str, Any]:
+        uv, uid, _ = self._append(self.folder, "probe flags")
+        st = self.store.mailbox_status(self.folder)
+        after_add = self.store.store_flags(self.folder, uv, [uid], add=["\\Seen", "\\Flagged"])
+        after_rm = self.store.store_flags(self.folder, uv, [uid], remove=["\\Flagged"])
+        return {"permanent_flags": st.permanent_flags, "writable": st.writable,
+                "after_add": after_add.get(uid), "after_remove": after_rm.get(uid)}
+
+    def probe_label_copy_and_removal(self) -> dict[str, Any]:
+        uv, uid, mid = self._append(self.folder, "probe label")
+        cr = self.store.copy(self.folder, uv, [uid], self.label)
+        after_copy = self._where(mid)
+        luv, luids = self.store.find_by_message_id(self.label, mid)
+        self.store.store_flags(self.label, luv, luids, add=["\\Deleted"])
+        expunged = self.store.expunge_uids(self.label, luv, luids)
+        after_expunge = self._where(mid)
+        return {"copy_mapping_reported": any(v is not None for v in cr.mapping.values()),
+                "after_copy_to_label": after_copy, "label_expunged": expunged,
+                "after_expunge_in_label": after_expunge}
+
+    def probe_move_into_label(self) -> dict[str, Any]:
+        uv, uid, mid = self._append(self.folder, "probe move into label")
+        self.store.move(self.folder, uv, [uid], self.label)
+        return {"after_move_folder_to_label": self._where(mid)}
+
+    def probe_move_between_locations(self) -> dict[str, Any]:
+        uv, uid, mid = self._append(self.folder, "probe move")
+        lbl = self.store.copy(self.folder, uv, [uid], self.label)
+        res = self.store.move(self.folder, uv, [uid], self.folder2)
+        return {"label_copy_ok": bool(lbl.mapping), "dest_uid_reported": res.mapping.get(uid),
+                "after_move_folder_to_folder": self._where(mid)}
+
+    def probe_expunge_from_folder(self) -> dict[str, Any]:
+        """Bridge behaviour here is reported to depend on mailbox type and a
+        feature flag: expunge outside Trash may destroy or move to Trash."""
+        uv, uid, mid = self._append(self.folder, "probe expunge folder")
+        self.store.store_flags(self.folder, uv, [uid], add=["\\Deleted"])
+        gone = self.store.expunge_uids(self.folder, uv, [uid])
+        time.sleep(2)
+        return {"expunged": gone, "after_expunge_in_folder": self._where(mid)}
+
+    def probe_trash_and_destroy(self) -> dict[str, Any]:
+        trash = self.store.mailbox_for_role(MailboxRole.TRASH)
+        if not trash:
+            return {"trash": None}
+        uv, uid, mid = self._append(self.folder, "probe trash")
+        self.store.move(self.folder, uv, [uid], trash)
+        in_trash = self._where(mid)
+        tuv, tuids = self.store.find_by_message_id(trash, mid)
+        self.store.store_flags(trash, tuv, tuids, add=["\\Deleted"])
+        gone = self.store.expunge_uids(trash, tuv, tuids)
+        time.sleep(2)
+        return {"after_move_to_trash": in_trash, "expunged_from_trash": gone,
+                "after_expunge_in_trash": self._where(mid)}
+
+    def probe_identity(self) -> dict[str, Any]:
+        """Is there a stable Bridge-exposed identity across occurrences?"""
+        uv, uid, mid = self._append(self.folder, "probe identity")
+        self.store.copy(self.folder, uv, [uid], self.label)
+        headers: dict[str, list[str]] = {}
+        for box in (self.folder, self.label, self.store.mailbox_for_role(MailboxRole.ALL_MAIL)):
+            if not box:
+                continue
+            buv, buids = self.store.find_by_message_id(box, mid)
+            if not buids:
+                continue
+            fm = self.store.fetch_message(box, buv, buids[0], header_only=True)
+            names = sorted({line.split(b":", 1)[0].decode(errors="replace")
+                            for line in fm.raw.split(b"\r\n") if b":" in line[:80]})
+            headers[box] = [n for n in names if n.lower().startswith(("x-pm", "x-proton"))]
+        return {"occurrences": self._where(mid), "proton_headers_by_mailbox": headers,
+                "server_capabilities_objectid": "OBJECTID" in
+                {c.upper() for c in self.report.capabilities}}
+
+    def probe_import_internaldate(self) -> dict[str, Any]:
+        old = datetime(2020, 1, 2, 3, 4, 5, tzinfo=UTC)
+        raw, mid = _raw("probe import", self.account.address, self.account.address, date=old)
+        res = self.store.append(self.folder, raw, internal_date=old)
+        uv, uids = self.store.find_by_message_id(self.folder, mid)
+        summ = self.store.fetch_summaries(self.folder, uv, uids[-1:])
+        got = summ[0].internal_date if summ else None
+        return {"appenduid_reported": res.uid is not None, "requested_internaldate":
+                old.isoformat(), "observed_internaldate": got.isoformat() if got else None}
+
+    def probe_drafts(self) -> dict[str, Any]:
+        drafts = self.store.mailbox_for_role(MailboxRole.DRAFTS)
+        if not drafts:
+            return {"drafts": None}
+        raw, mid = _raw("probe draft", self.account.address, self.account.address)
+        res = self.store.append(drafts, raw, flags=["\\Draft", "\\Seen"])
+        uv, uids = self.store.find_by_message_id(drafts, mid)
+        flags = self.store.fetch_flags(drafts, uv, uids) if uids else {}
+        raw2, mid2 = _raw("probe draft v2", self.account.address, self.account.address)
+        res2 = self.store.append(drafts, raw2, flags=["\\Draft", "\\Seen"])
+        self.store.store_flags(drafts, uv, uids, add=["\\Deleted"])
+        removed = self.store.expunge_uids(drafts, uv, uids)
+        uv2, uids2 = self.store.find_by_message_id(drafts, mid2)
+        if uids2:
+            self.store.store_flags(drafts, uv2, uids2, add=["\\Deleted"])
+            self.store.expunge_uids(drafts, uv2, uids2)
+        return {"appenduid_reported": res.uid is not None, "flags": flags,
+                "replacement_appended": res2.uid is not None or bool(uids2),
+                "old_removed": removed}
+
+    def probe_smtp_sent_copy(self) -> dict[str, Any]:
+        if not (self.transport and self.send_to):
+            raise _Skip("pass --send-to with an address you control to probe SMTP")
+        raw, mid = _raw("mcp-proton probe send", self.account.address, self.send_to)
+        results = self.transport.send(self.account.address, [self.send_to], raw)
+        sent = self.store.mailbox_for_role(MailboxRole.SENT)
+        found: list[int] = []
+        deadline = time.time() + self.sent_wait
+        while sent and time.time() < deadline and not found:
+            time.sleep(2)
+            found = self.store.find_by_message_id(sent, mid)[1]
+        return {"recipients": [r.model_dump() for r in results],
+                "sent_copies_after_wait": len(found), "waited_seconds": self.sent_wait,
+                "note": "Bridge is expected to file Sent itself; mcp-proton never appends one"}
+
+    def probe_folder_delete_effect(self) -> dict[str, Any]:
+        uv, uid, mid = self._append(self.folder2, "probe folder delete")
+        self.store.delete_mailbox(self.folder2)
+        time.sleep(2)
+        return {"after_deleting_non_empty_folder": self._where(mid)}
+
+    def probe_idle(self) -> dict[str, Any]:
+        if not self.store.has_capability("IDLE"):
+            return {"idle": False}
+        t0 = time.time()
+        self.store.idle_wait(self.folder, timeout=3)
+        return {"idle": True, "returned_after_s": round(time.time() - t0, 2)}
+
+    # ---------------------------------------------------------------- run
+    def run(self) -> ProbeReport:
+        self.store.create_mailbox(self.folder)
+        self.store.create_mailbox(self.folder2)
+        self.store.create_mailbox(self.label)
+        try:
+            self._run("mailboxes", "list hierarchy, special folders, counts", self.probe_mailboxes)
+            self._run("flags", "read/unread, star/unstar, other permanent flags",
+                      self.probe_flags)
+            self._run("label_copy_remove", "list, create, apply, remove",
+                      self.probe_label_copy_and_removal)
+            self._run("move_into_label", "list, create, apply, remove", self.probe_move_into_label,
+                      note="MOVE into a label is treated as unsupported_semantics until observed")
+            self._run("move_locations", "move, archive, trash, restore, spam, not-spam",
+                      self.probe_move_between_locations)
+            self._run("expunge_folder", "mark/clear deleted, targeted expunge, empty trash/spam",
+                      self.probe_expunge_from_folder)
+            self._run("trash_destroy", "mark/clear deleted, targeted expunge, empty trash/spam",
+                      self.probe_trash_and_destroy)
+            self._run("identity", "Message-ID/References grouping (presentation only)",
+                      self.probe_identity)
+            self._run("import_internaldate", "EML and mbox import/export with manifests",
+                      self.probe_import_internaldate)
+            self._run("drafts", "create, read, update, discard, send", self.probe_drafts)
+            self._run_skippable("smtp_sent", "compose, reply, reply-all, forward inline/attachment",
+                                self.probe_smtp_sent_copy)
+            self._run("folder_delete", "rename/move hierarchy, delete",
+                      self.probe_folder_delete_effect)
+            self._run("idle", "new mail, flags, memberships, deletions", self.probe_idle)
+        finally:
+            self.cleanup()
+        self.report.finished_at = datetime.now(UTC).isoformat()
+        return self.report
+
+    def _run_skippable(self, probe: str, operation: str, fn: Callable[[], dict[str, Any]]) -> None:
+        try:
+            self._run(probe, operation, fn)
+        except _Skip as s:
+            self.report.observations.append(Observation(probe, operation, "skipped", note=str(s)))
+
+    def cleanup(self) -> None:
+        """Remove probe mailboxes; probe messages left in Trash/All Mail are tagged by
+        their Message-ID domain ``mcp-proton-probe.invalid``."""
+        for box in (self.label, self.folder2, self.folder):
+            with contextlib.suppress(MailError):
+                self.store.delete_mailbox(box)
+
+
+class _Skip(Exception):  # noqa: N818
+    pass
+
+
+# Probes whose observation is acceptance evidence for an inventory operation only
+# when the owner has reviewed it; --record stores it as such.
+def record_evidence(report: ProbeReport, path: Path, reviewed_by: str) -> int:
+    data: dict[str, Any] = {"schema": 1, "operations": {}}
+    if path.exists():
+        data = json.loads(path.read_text())
+    ops = data.setdefault("operations", {})
+    n = 0
+    for obs in report.observations:
+        if obs.outcome != "observed":
+            continue
+        entry = ops.setdefault(obs.operation, {"versions": [], "evidence": []})
+        if report.bridge_version and report.bridge_version not in entry["versions"]:
+            entry["versions"].append(report.bridge_version)
+        entry["evidence"].append({
+            "probe": obs.probe, "bridge_version": report.bridge_version,
+            "date": report.started_at, "configuration": report.configuration,
+            "observed": obs.observed, "reviewed_by": reviewed_by,
+        })
+        n += 1
+    path.write_text(json.dumps(data, indent=2, default=str))
+    return n
+
+
+def smtp_reachable(host: str, port: int, timeout: float = 5.0) -> bool:
+    try:
+        with smtplib.SMTP(host, port, timeout=timeout) as s:
+            s.noop()
+        return True
+    except (OSError, smtplib.SMTPException):
+        return False
+
+
+def evidence_age_ok(entry: dict[str, Any], max_age_days: int = 90) -> bool:
+    """Evidence for remote-feature-flag-dependent behaviour expires periodically."""
+    dates = [datetime.fromisoformat(e["date"]) for e in entry.get("evidence", []) if "date" in e]
+    return bool(dates) and max(dates) > datetime.now(UTC) - timedelta(days=max_age_days)
