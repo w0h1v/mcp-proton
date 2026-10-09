@@ -13,7 +13,7 @@ def test_imap_fixture_has_bridge_tree(imap_server):
 
 def test_smtp_fixture_records_and_rejects(smtp_server):
     smtp_server.reject.add("bad@x.test")
-    with smtplib.SMTP(smtp_server.host, smtp_server.port) as s:
+    with smtplib.SMTP(smtp_server.host, smtp_server.port, local_hostname="localhost") as s:
         refused = s.sendmail("me@x.test", ["ok@x.test", "bad@x.test"], b"Subject: hi\r\n\r\nbody")
     assert "bad@x.test" in refused
     assert smtp_server.messages[0][1] == ["ok@x.test"]

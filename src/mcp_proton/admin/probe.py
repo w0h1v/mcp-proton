@@ -351,7 +351,7 @@ def record_evidence(report: ProbeReport, path: Path, reviewed_by: str) -> int:
 
 def smtp_reachable(host: str, port: int, timeout: float = 5.0) -> bool:
     try:
-        with smtplib.SMTP(host, port, timeout=timeout) as s:
+        with smtplib.SMTP(host, port, timeout=timeout, local_hostname="localhost") as s:
             s.noop()
         return True
     except (OSError, smtplib.SMTPException):

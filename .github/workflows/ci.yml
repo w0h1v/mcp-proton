@@ -55,7 +55,7 @@ jobs:
         run: mypy
 
       - name: Test (fake servers only)
-        run: pytest -q -m "not live"
+        run: pytest -q -ra --durations=20 -m "not live"
 
       - name: Build sdist and wheel
         run: uv build

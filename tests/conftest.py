@@ -44,6 +44,9 @@ def imap_server():
          "--port", str(port), "--host", "127.0.0.1",
          "--no-service", "managesieve", "--no-service", "admin", "dict"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        # pymap otherwise calls socket.getfqdn() for every greeting, which takes
+        # seconds on macOS CI runners.
+        env={**os.environ, "FQDN": "localhost"},
     )
     deadline = time.time() + 15
     while time.time() < deadline:
@@ -101,7 +104,7 @@ def smtp_server():
                 return "250 OK"
             return "250 OK queued"
 
-    ctl = Controller(Handler(), hostname="127.0.0.1", port=port,
+    ctl = Controller(Handler(), hostname="127.0.0.1", port=port, server_hostname="localhost",
                      auth_require_tls=False, auth_required=False)
     ctl.start()
     yield state
