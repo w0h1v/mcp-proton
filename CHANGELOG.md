@@ -27,3 +27,4 @@ Not released. Implemented and tested against fake IMAP/SMTP servers only; not ye
 - Searches using `any_of` (OR) or `not` are sent in the form RFC 3501 requires; Bridge rejected the previous form.
 - The probe checks OR, NOT, nested and non-ASCII searches against Bridge, and `probe --record-report` records a reviewed report without rerunning the probe.
 - `messages_search` takes `account_wide` to search every readable mailbox, including All Mail. Over several mailboxes, each result is one message with an `occurrences` list, grouped by Proton's message ID (`X-Pm-Internal-Id`), else by Message-ID.
+- Search filters `has_attachment`, `attachment_name` (filename contains, case-insensitive) and `attachment_type` (`application/pdf`, or a prefix such as `image/`). IMAP cannot search them, so they are applied from each match's MIME structure; they apply to bulk previews and rules too.

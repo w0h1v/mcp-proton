@@ -18,7 +18,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .errors import invalid
 
@@ -222,11 +222,35 @@ class SearchQuery(Model):
     keyword: str | None = None
     header: dict[str, str] | None = None
     uid_range: str | None = None
+    # Attachment filters: applied after the IMAP search from each match's MIME
+    # structure (IMAP cannot search them). Top level only.
+    has_attachment: bool | None = None
+    attachment_name: str | None = Field(
+        default=None, max_length=200,
+        description="Case-insensitive text that an attachment's filename must contain.")
+    attachment_type: str | None = Field(
+        default=None, max_length=100, pattern=r"^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]*$",
+        description="An attachment's MIME type, such as application/pdf, or a prefix "
+                    "ending in '/', such as image/.")
     any_of: list[SearchQuery] | None = Field(default=None, max_length=20)
     not_: SearchQuery | None = Field(default=None, alias="not")
 
+    def has_attachment_filter(self) -> bool:
+        return (self.has_attachment is not None or self.attachment_name is not None
+                or self.attachment_type is not None)
+
+    @model_validator(mode="after")
+    def _attachment_filters_top_level(self) -> SearchQuery:
+        # Children validate first, so each level only checks its direct children.
+        nested = [*(self.any_of or []), *([self.not_] if self.not_ is not None else [])]
+        if any(q.has_attachment_filter() for q in nested):
+            raise ValueError("attachment filters (has_attachment, attachment_name, "
+                             "attachment_type) are only supported at the top level, not "
+                             "inside any_of or not")
+        return self
+
     @field_validator("from_", "to", "cc", "bcc", "subject", "body", "text", "keyword",
-                     "uid_range")
+                     "uid_range", "attachment_name")
     @classmethod
     def _no_control_chars(cls, v: str | None) -> str | None:
         if v is not None and _CONTROL_CHARS.search(v):

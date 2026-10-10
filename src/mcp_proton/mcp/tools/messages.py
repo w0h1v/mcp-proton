@@ -82,7 +82,8 @@ def build(gw: Gateway) -> LocalProvider:
 
     @gw.tool(p, "messages_search",
              "Structured search (sender, recipients, subject, body, dates, size, flags, "
-             "headers, any_of/not combinations). Searches INBOX unless mailboxes or "
+             "headers, any_of/not combinations; has_attachment, attachment_name and "
+             "attachment_type at the top level). Searches INBOX unless mailboxes or "
              "account_wide is given. Over several mailboxes each item is one message, with "
              "occurrences listing every mailbox it is in. Completeness is always reported "
              "as unknown.", title="Search messages")

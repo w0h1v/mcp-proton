@@ -148,6 +148,102 @@ def test_boolean_search_wire_format_and_results(store, monkeypatch, query, expec
     assert got == expect
 
 
+def _with_parts(subject, parts):
+    m = EmailMessage()
+    m["Subject"] = subject
+    m["From"] = "alice@x.test"
+    m["To"] = "bob@x.test"
+    m["Message-ID"] = f"<{subject.replace(' ', '.')}@x.test>"
+    m.set_content("see attached")
+    for maintype, subtype, filename, data in parts:
+        if maintype == "message":
+            inner = EmailMessage()
+            inner["Subject"] = "inner"
+            inner.set_content("inner body")
+            m.add_attachment(inner)
+        else:
+            m.add_attachment(data, maintype=maintype, subtype=subtype, filename=filename)
+    return m.as_bytes()
+
+
+@pytest.fixture
+def attachment_box(store):
+    msgs = {
+        "plain": [],
+        "invoice": [("application", "pdf", "Invoice-2026-10.pdf", b"%PDF")],
+        "photo": [("image", "jpeg", "beach.jpg", b"\xff\xd8")],
+        "both": [("application", "pdf", "contract.pdf", b"%PDF"),
+                 ("image", "png", "signature.png", b"\x89PNG")],
+        "unicode": [("application", "pdf", "Rechnung März.pdf", b"%PDF")],
+        "forwarded": [("message", "rfc822", None, None)],
+    }
+    for subject, parts in msgs.items():
+        store.append("INBOX", _with_parts(f"att {subject}", parts))
+    return store
+
+
+def _subjects(store, query):
+    uv, uids, notes = store.search("INBOX", query)
+    return {s.subject.removeprefix("att ") for s in store.fetch_summaries("INBOX", uv, uids)}, notes
+
+
+@pytest.mark.parametrize("filters, expect", [
+    ({"has_attachment": True}, {"invoice", "photo", "both", "unicode", "forwarded"}),
+    ({"has_attachment": False}, {"plain"}),
+    ({"attachment_type": "application/pdf"}, {"invoice", "both", "unicode"}),
+    ({"attachment_type": "image/"}, {"photo", "both"}),
+    ({"attachment_type": "message/rfc822"}, {"forwarded"}),
+    ({"attachment_name": "invoice"}, {"invoice"}),
+    ({"attachment_name": "MÄRZ"}, {"unicode"}),  # RFC 2231 filename, case-insensitive
+    ({"attachment_name": ".pdf", "attachment_type": "image/"}, {"both"}),
+    ({"attachment_type": "application/pdf", "subject": "contract"}, set()),  # AND-ed
+    ({"attachment_type": "application/pdf", "subject": "att"},
+     {"invoice", "both", "unicode"}),
+])
+def test_attachment_filters(attachment_box, filters, expect):
+    got, notes = _subjects(attachment_box, SearchQuery(**filters))
+    assert got == expect
+    assert any("MIME structure" in n for n in notes)
+
+
+def test_attachment_parts_from_rfc3501_structure():
+    """The form Bridge sends: the disposition as ("attachment" ("filename" ...)),
+    with RFC 2231 and RFC 2047 encoded names."""
+    text = (b"text", b"plain", (b"charset", b"utf-8"), None, None, b"7bit", 10, 1,
+            None, None, None, None)
+    pdf = (b"application", b"pdf", None, None, None, b"base64", 100, None,
+           (b"attachment", (b"filename*", b"utf-8''Rechnung%20M%C3%A4rz.pdf")), None, None)
+    img = (b"image", b"png", (b"name", b"=?utf-8?q?R=C3=A9sum=C3=A9.png?="), None, None,
+           b"base64", 100, None, (b"inline", None), None, None)
+    structure = ([text, pdf, img], b"mixed", (b"boundary", b"x"), None, None, None)
+    assert imap_mod._attachment_parts(structure) == [
+        ("application/pdf", "Rechnung März.pdf"), ("image/png", "Résumé.png")]
+    assert imap_mod._has_attachments(structure) is True
+    assert imap_mod._attachments_match(structure, SearchQuery(attachment_name="résumé"))
+    assert imap_mod._attachments_match(structure, SearchQuery(attachment_type="image/"))
+    assert not imap_mod._attachments_match(structure, SearchQuery(attachment_type="video/"))
+    assert not imap_mod._attachments_match(None, SearchQuery(has_attachment=False))
+
+
+def test_attachment_filters_are_top_level_only():
+    from pydantic import ValidationError
+
+    for bad in ({"any_of": [{"attachment_name": "x"}, {"subject": "y"}]},
+                {"not": {"has_attachment": True}},
+                {"not": {"any_of": [{"attachment_type": "image/"}, {"subject": "y"}]}}):
+        with pytest.raises(ValidationError):
+            SearchQuery.model_validate(bad)
+    with pytest.raises(ValidationError):
+        SearchQuery(attachment_type="pdf")  # not a MIME type
+
+
+def test_attachment_filter_refuses_too_many_matches(attachment_box, monkeypatch):
+    monkeypatch.setattr(imap_mod, "ATTACHMENT_FILTER_MAX", 2)
+    with pytest.raises(MailError) as e:
+        attachment_box.search("INBOX", SearchQuery(has_attachment=True))
+    assert e.value.code is ErrorCode.LIMIT_EXCEEDED
+
+
 def test_search_notes():
     q = SearchQuery(since=datetime(2026, 1, 1), any_of=[SearchQuery(body="x"),
                                                          SearchQuery(subject="ü")])

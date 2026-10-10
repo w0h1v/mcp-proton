@@ -280,3 +280,24 @@ async def test_account_wide_search_groups_occurrences(app, seed):
         bad = await call(c, "messages_search", {
             "account": ACCOUNT, "query": {}, "mailboxes": ["INBOX"], "account_wide": True})
         assert bad["error"]["code"] == "invalid_request"
+
+
+async def test_search_attachment_filters(app, seed):
+    from email.message import EmailMessage
+
+    seed(subject="No attachment here")
+    m = EmailMessage()
+    m["Subject"], m["From"], m["To"] = "Invoice attached", "alice@example.com", "me@x.test"
+    m["Message-ID"] = "<inv@x>"
+    m.set_content("see attached")
+    m.add_attachment(b"%PDF", maintype="application", subtype="pdf", filename="inv-10.pdf")
+    app.store(ACCOUNT).append("INBOX", m.as_bytes())
+    async with client_for(app) as c:
+        res = await call(c, "messages_search", {
+            "account": ACCOUNT, "query": {"attachment_type": "application/pdf",
+                                          "attachment_name": "INV"}})
+        assert [i["subject"] for i in res["items"]] == ["Invoice attached"]
+        bad = await call(c, "messages_search", {
+            "account": ACCOUNT, "query": {"any_of": [{"has_attachment": True},
+                                                     {"subject": "x"}]}})
+        assert "only supported at the top level" in str(bad["error"])
