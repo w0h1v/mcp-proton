@@ -16,14 +16,14 @@ the rest continue, and the overall status reports partial success.
 from __future__ import annotations
 
 import hashlib
-import heapq
 import threading
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from datetime import UTC
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from ..bridge import mime
+from ..bridge.ports import MailStore, MessageIdentity
 from ..domain.errors import ErrorCode, MailError, invalid, not_found, stale
 from ..domain.families import OperationFamily as F
 from ..domain.families import family_of
@@ -230,15 +230,6 @@ def get_raw(app: MailApp, caller: CallerContext, handle: str) -> bytes:
 # ---------------------------------------------------------------- search
 
 
-def _sort_ts(s: MessageSummary) -> float:
-    dt = s.internal_date or s.date
-    if dt is None:
-        return 0.0
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt.timestamp()
-
-
 # Mailboxes an account-wide search skips: Starred only repeats flagged messages and
 # containers hold no messages.
 _ACCOUNT_WIDE_SKIP = frozenset({MailboxRole.STARRED, MailboxRole.CONTAINER})
@@ -248,7 +239,7 @@ _PRIMARY_RANK = {MailboxRole.INBOX: 0, MailboxRole.FOLDER: 0, MailboxRole.ARCHIV
                  MailboxRole.TRASH: 1, MailboxRole.LABEL: 2, MailboxRole.ALL_MAIL: 3}
 
 
-def _identity(s: MessageSummary) -> tuple[str, ...]:
+def _identity(s: MessageSummary | MessageIdentity) -> tuple[str, ...]:
     """Key grouping one message's occurrences: Proton's message ID when Bridge
     provides it, else the Message-ID header, else the occurrence itself."""
     if s.provider_id:
@@ -280,14 +271,18 @@ def _account_scope(app: MailApp, caller: CallerContext, account: str
     return scope, skipped, roles
 
 
+# A search over several mailboxes reads every match's identity to group them; past
+# this many occurrences the caller must narrow the query.
+GROUPED_SEARCH_MAX_OCCURRENCES = 5000
+
+
 def search(app: MailApp, caller: CallerContext, account: str, query: SearchQuery,
            mailboxes: list[str] | None = None, limit: int = 50,
            cursor: str | None = None, *, account_wide: bool = False) -> SearchResult:
     """Structured search. Default scope is INBOX only (disclosed in ``notes``);
     pass ``mailboxes`` to widen it, or ``account_wide`` for every mailbox the caller
-    may read. Mailboxes are searched sequentially and the results merged newest
-    first by internal date (UID order within a mailbox). Over several mailboxes,
-    occurrences of one message are grouped into a single item with ``occurrences``.
+    may read. A single mailbox pages newest first by UID. Over several mailboxes,
+    each item is one message with ``occurrences``, newest first by internal date.
     Completeness is always ``unknown``: Bridge sync state cannot be established."""
     if account_wide and mailboxes:
         raise invalid("pass either mailboxes or account_wide, not both")
@@ -301,16 +296,12 @@ def search(app: MailApp, caller: CallerContext, account: str, query: SearchQuery
     require_content_search_allowed(app, caller, query)
     limit = _clamp_limit(app, limit)
     store = app.store(account)
-    grouped = len(scope) > 1
-    if grouped and not roles:
-        roles = {b.name: b.role for b in store.list_mailboxes()}
     qhash = hashlib.sha256(
         (query.model_dump_json(by_alias=True, exclude_none=True) + "|" + "\x00".join(scope))
         .encode()).hexdigest()[:16]
     cur = decode_cursor(cursor)
     if cur is not None and (cur.get("k") != "search" or cur.get("q") != qhash):
         raise invalid("cursor does not belong to this search")
-    last: dict[str, int] = dict(cur.get("l", {})) if cur else {}
     pinned: dict[str, int] = dict(cur.get("v", {})) if cur else {}
 
     notes: list[str] = []
@@ -324,64 +315,21 @@ def search(app: MailApp, caller: CallerContext, account: str, query: SearchQuery
             raise stale("mailbox UIDVALIDITY changed; restart the search", mailbox=mb)
         uvs[mb] = uv
         total += len(uids)
-        ordered = sorted(uids, reverse=True)
-        if mb in last:
-            ordered = [u for u in ordered if u < last[mb]]
-        hits[mb] = ordered
+        hits[mb] = sorted(uids, reverse=True)
 
-    # K-way merge of per-mailbox UID-descending streams by head timestamp.
-    cands: dict[str, list[MessageSummary]] = {
-        mb: store.fetch_summaries(mb, uvs[mb], hits[mb][:limit]) for mb in scope}
-    pos = dict.fromkeys(scope, 0)
-    heap: list[tuple[float, int, str]] = []
-    for idx, mb in enumerate(scope):
-        if cands[mb]:
-            heapq.heappush(heap, (-_sort_ts(cands[mb][0]), idx, mb))
-    groups: dict[tuple[str, ...], list[MessageSummary]] = {}
-    new_last = dict(last)
-
-    def take() -> MessageSummary:
-        _, idx, mb = heapq.heappop(heap)
-        s = cands[mb][pos[mb]]
-        new_last[mb] = s.uid
-        pos[mb] += 1
-        if pos[mb] < len(cands[mb]):
-            heapq.heappush(heap, (-_sort_ts(cands[mb][pos[mb]]), idx, mb))
-        return s
-
-    while heap and len(groups) < limit:
-        s = take()
-        groups.setdefault(_identity(s) if grouped else ("occ", s.mailbox, str(s.uid)),
-                          []).append(s)
-    if grouped:
-        # Other occurrences of the last messages usually sort next (same internal
-        # date); fold them in now rather than repeat the message on the next page.
-        while heap:
-            _, _, mb = heap[0]
-            if _identity(cands[mb][pos[mb]]) not in groups:
-                break
-            s = take()
-            groups[_identity(s)].append(s)
-
-    items: list[MessageSummary] = []
-    for occ in groups.values():
-        if not grouped:
-            items.append(occ[0])
-            continue
-        primary = min(occ, key=lambda o: _PRIMARY_RANK.get(roles.get(o.mailbox,
-                                                                     MailboxRole.OTHER), 4))
-        items.append(primary.model_copy(update={"occurrences": [
-            Occurrence(mailbox=o.mailbox, role=(r.value if (r := roles.get(o.mailbox))
-                                               else None), handle=o.handle)
-            for o in occ]}))
-    more = any(u < new_last[mb] for mb in scope if mb in new_last for u in hits[mb]) or any(
-        hits[mb] for mb in scope if mb not in new_last)
-    next_cursor = (encode_cursor({"k": "search", "q": qhash, "v": uvs, "l": new_last})
-                   if more and items else None)
+    if len(scope) > 1:
+        if not roles:
+            roles = {b.name: b.role for b in store.list_mailboxes()}
+        items, next_cursor = _grouped_page(store, scope, uvs, hits, roles, qhash, cur, limit,
+                                           total)
+    else:
+        items, next_cursor = _single_page(store, scope[0], uvs, hits, qhash, cur, limit)
 
     if account_wide:
-        notes.append(f"Searched all {len(scope)} readable mailboxes, including All Mail; "
-                     "Starred is skipped because it repeats flagged messages.")
+        all_mail = any(roles.get(mb) is MailboxRole.ALL_MAIL for mb in scope)
+        notes.append(f"Searched {len(scope)} readable mailbox(es)"
+                     + (", including All Mail" if all_mail else "")
+                     + "; Starred is skipped because it repeats flagged messages.")
         if skipped:
             notes.append(f"{skipped} mailbox(es) were skipped because policy does not allow "
                          "reading them.")
@@ -390,14 +338,93 @@ def search(app: MailApp, caller: CallerContext, account: str, query: SearchQuery
     else:
         notes.append("Searched INBOX only (default scope); pass mailboxes or account_wide "
                      "to search elsewhere.")
-    if grouped:
-        notes.append("Each item is one message; occurrences lists every mailbox it was found "
-                     "in, and handle is its location occurrence. Occurrences are grouped by "
-                     "Proton's message ID (X-Pm-Internal-Id), else by Message-ID. total counts "
-                     "occurrences, not messages. A message can still repeat across pages if "
-                     "its occurrences have different dates.")
+    if len(scope) > 1:
+        notes.append("Each item is one message, newest first; occurrences lists every mailbox "
+                     "it was found in, and handle is its location occurrence. Occurrences are "
+                     "grouped by Proton's message ID (X-Pm-Internal-Id), else by Message-ID. "
+                     "total counts occurrences, not messages.")
     return SearchResult(items=items, total=total, next_cursor=next_cursor, scope=scope,
                         completeness="unknown", notes=notes)
+
+
+def _single_page(store: MailStore, mb: str, uvs: dict[str, int], hits: dict[str, list[int]],
+                 qhash: str, cur: dict[str, Any] | None, limit: int
+                 ) -> tuple[list[MessageSummary], str | None]:
+    """One mailbox: newest first by UID; the cursor holds the last UID returned."""
+    ordered = hits[mb]
+    last = dict(cur.get("l", {})) if cur else {}
+    if mb in last:
+        ordered = [u for u in ordered if u < last[mb]]
+    page = ordered[:limit]
+    items = store.fetch_summaries(mb, uvs[mb], page)
+    next_cursor = (encode_cursor({"k": "search", "q": qhash, "v": uvs, "l": {mb: page[-1]}})
+                   if len(ordered) > limit and page else None)
+    return items, next_cursor
+
+
+def _dt_ts(dt: datetime | None) -> float:
+    if dt is None:
+        return 0.0
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return float(dt.timestamp())
+
+
+def _grouped_page(store: MailStore, scope: list[str], uvs: dict[str, int],
+                  hits: dict[str, list[int]], roles: dict[str, MailboxRole], qhash: str,
+                  cur: dict[str, Any] | None, limit: int, total: int
+                  ) -> tuple[list[MessageSummary], str | None]:
+    """Several mailboxes: read every match's identity (date and IDs only), group the
+    occurrences of each message, order the messages newest first, then fetch full
+    summaries for the page alone. The cursor holds the last message's sort key."""
+    if total > GROUPED_SEARCH_MAX_OCCURRENCES:
+        raise MailError(ErrorCode.LIMIT_EXCEEDED,
+                        f"the search matched {total} occurrences across {len(scope)} "
+                        "mailboxes; narrow the query or search fewer mailboxes",
+                        occurrences=total, limit=GROUPED_SEARCH_MAX_OCCURRENCES)
+    groups: dict[tuple[str, ...], list[MessageIdentity]] = {}
+    for mb in scope:
+        for ident in store.fetch_identities(mb, uvs[mb], hits[mb]):
+            groups.setdefault(_identity(ident), []).append(ident)
+
+    def sort_key(key: tuple[str, ...]) -> tuple[float, int, str]:
+        # Newest first; on equal dates (second resolution) the higher UID first, so a
+        # mailbox's newest message leads; then the key, for a total order.
+        occ = groups[key]
+        return (-max(_dt_ts(o.internal_date) for o in occ), -max(o.uid for o in occ),
+                "\x00".join(key))
+
+    ordered = sorted(groups, key=sort_key)
+    if cur is not None and "g" in cur:
+        after = (float(cur["g"][0]), int(cur["g"][1]), str(cur["g"][2]))
+        ordered = [k for k in ordered if sort_key(k) > after]
+    page = ordered[:limit]
+
+    wanted: dict[str, list[int]] = {}
+    for key in page:
+        for o in groups[key]:
+            wanted.setdefault(o.mailbox, []).append(o.uid)
+    summaries = {(s.mailbox, s.uid): s for mb, uids in wanted.items()
+                 for s in store.fetch_summaries(mb, uvs[mb], uids)}
+
+    items: list[MessageSummary] = []
+    for key in page:
+        occ = [summaries[(o.mailbox, o.uid)] for o in groups[key]
+               if (o.mailbox, o.uid) in summaries]  # an occurrence may vanish meanwhile
+        if not occ:
+            continue
+        primary = min(occ, key=lambda o: _PRIMARY_RANK.get(roles.get(o.mailbox,
+                                                                     MailboxRole.OTHER), 4))
+        items.append(primary.model_copy(update={"occurrences": [
+            Occurrence(mailbox=o.mailbox, role=(r.value if (r := roles.get(o.mailbox))
+                                               else None), handle=o.handle)
+            for o in occ]}))
+    next_cursor = None
+    if len(ordered) > limit and page:
+        last_key = sort_key(page[-1])
+        next_cursor = encode_cursor({"k": "search", "q": qhash, "v": uvs,
+                                     "g": list(last_key)})
+    return items, next_cursor
 
 
 # ---------------------------------------------------------------- flag normalization

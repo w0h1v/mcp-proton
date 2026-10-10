@@ -56,7 +56,7 @@ from ..domain.models import (
     SearchQuery,
 )
 from . import credentials, tls
-from .ports import AppendResult, CapabilityReport, CopyResult, FetchedMessage
+from .ports import AppendResult, CapabilityReport, CopyResult, FetchedMessage, MessageIdentity
 
 logger = logging.getLogger(__name__)
 
@@ -226,15 +226,19 @@ def encode_criteria(criteria: list[Any]) -> list[bytes]:
 PROVIDER_ID_HEADER = "X-PM-INTERNAL-ID"
 
 
-def _provider_id(item: dict[bytes, Any]) -> str | None:
-    """The X-Pm-Internal-Id value from a HEADER.FIELDS fetch item, if present."""
+def _header_field(item: dict[bytes, Any], name: str) -> str | None:
+    """One header's value from a HEADER.FIELDS fetch item, if present."""
     for key, value in item.items():
         if key.startswith(b"BODY[HEADER.FIELDS") and isinstance(value, bytes):
-            for line in value.replace(b"\r\n ", b" ").split(b"\r\n"):
-                name, _, rest = line.partition(b":")
-                if name.strip().upper() == PROVIDER_ID_HEADER.encode():
+            for line in value.replace(b"\r\n ", b" ").replace(b"\r\n\t", b" ").split(b"\r\n"):
+                field, _, rest = line.partition(b":")
+                if field.strip().upper() == name.upper().encode():
                     return rest.strip().decode("ascii", "replace") or None
     return None
+
+
+def _provider_id(item: dict[bytes, Any]) -> str | None:
+    return _header_field(item, PROVIDER_ID_HEADER)
 
 
 def _check_flag(flag: str, *, allow_system: bool = True) -> None:
@@ -860,6 +864,27 @@ class ImapMailStore:
                 provider_id=_provider_id(item),
             ))
         return out
+
+    def fetch_identities(self, mailbox: str, uidvalidity: int, uids: list[int]
+                         ) -> list[MessageIdentity]:
+        if not uids:
+            return []
+        fields = ["INTERNALDATE",
+                  f"BODY.PEEK[HEADER.FIELDS ({PROVIDER_ID_HEADER} MESSAGE-ID)]"]
+
+        def run(conn: _Conn) -> dict[int, dict[bytes, Any]]:
+            self._open(conn, mailbox, uidvalidity, write=False)
+            data: dict[int, dict[bytes, Any]] = {}
+            for chunk in _chunks(list(uids)):
+                data.update(self._fetch_present(conn, chunk, fields))
+            return data
+
+        data = self._exec(run, retry=True, what="fetch")
+        return [MessageIdentity(mailbox=mailbox, uid=uid,
+                                internal_date=item.get(b"INTERNALDATE"),
+                                provider_id=_provider_id(item),
+                                message_id=_header_field(item, "Message-ID"))
+                for uid in uids if (item := data.get(uid)) is not None]
 
     def fetch_message(self, mailbox: str, uidvalidity: int, uid: int,
                       header_only: bool = False) -> FetchedMessage:

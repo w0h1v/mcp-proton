@@ -255,6 +255,46 @@ def test_grouped_message_is_not_repeated_on_the_next_page(app, caller, seed):
     assert sorted(seen) == ["needle 0", "needle 1", "needle 2"]
 
 
+def test_grouping_sees_occurrences_beyond_each_mailbox_page(app, caller):
+    """A label's UID order follows when labels were applied, not message dates: the
+    newest message can have the label's lowest UID. Its occurrences must still be
+    grouped on the first page, and it must not reappear later."""
+    from datetime import UTC, datetime
+
+    from tests.services.conftest import make_raw
+
+    store = app.store(ACCOUNT)
+    store.create_mailbox("Labels/x")
+    store.append("INBOX", make_raw(subject="needle newest", message_id="<new@x>"))
+    store.append("Labels/x", make_raw(subject="needle newest", message_id="<new@x>"))
+    for i in range(3):  # higher UIDs in the label, but older messages
+        store.append("Labels/x", make_raw(subject=f"needle old {i}", message_id=f"<o{i}@x>"),
+                     internal_date=datetime(2020, 1, 1 + i, tzinfo=UTC))
+    q = SearchQuery(subject="needle")
+    first = messages.search(app, caller, ACCOUNT, q, mailboxes=["INBOX", "Labels/x"], limit=1)
+    [item] = first.items
+    assert item.subject == "needle newest"
+    assert _occurrences(item) == ["INBOX", "Labels/x"]
+    seen = [item.subject]
+    cursor = first.next_cursor
+    while cursor:
+        res = messages.search(app, caller, ACCOUNT, q, mailboxes=["INBOX", "Labels/x"],
+                              limit=1, cursor=cursor)
+        seen += [i.subject for i in res.items]
+        cursor = res.next_cursor
+    assert seen == ["needle newest", "needle old 2", "needle old 1", "needle old 0"]
+
+
+def test_grouped_search_refuses_too_many_occurrences(app, caller, seed, monkeypatch):
+    seed("INBOX", 2, subject="needle")
+    seed("Archive", 1, subject="needle")
+    monkeypatch.setattr(messages, "GROUPED_SEARCH_MAX_OCCURRENCES", 2)
+    with pytest.raises(MailError) as e:
+        messages.search(app, caller, ACCOUNT, SearchQuery(subject="needle"),
+                        mailboxes=["INBOX", "Archive"])
+    assert e.value.code is ErrorCode.LIMIT_EXCEEDED and "narrow" in e.value.message
+
+
 def test_account_wide_search(app, caller, seed):
     seed("INBOX", 1, subject="needle in inbox")
     seed("Trash", 1, subject="needle in trash")
@@ -263,7 +303,7 @@ def test_account_wide_search(app, caller, seed):
                           account_wide=True)
     assert "Starred" not in res.scope and {"INBOX", "Trash", "All Mail"} <= set(res.scope)
     assert {i.subject for i in res.items} == {"needle in inbox", "needle in trash"}
-    assert any("all" in n and "readable mailboxes" in n for n in res.notes)
+    assert any("including All Mail" in n for n in res.notes)
     with pytest.raises(MailError) as e:
         messages.search(app, caller, ACCOUNT, SearchQuery(), mailboxes=["INBOX"],
                         account_wide=True)
@@ -282,6 +322,7 @@ def test_account_wide_search_skips_mailboxes_policy_excludes(make_app, caller, s
                           account_wide=True)
     assert res.scope == ["INBOX"] and [i.subject for i in res.items] == ["needle a"]
     assert any("skipped because policy" in n for n in res.notes)
+    assert not any("All Mail" in n for n in res.notes)  # not searched, so not claimed
 
 
 # ------------------------------------------------------------------ flags
