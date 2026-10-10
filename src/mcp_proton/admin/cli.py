@@ -183,6 +183,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--record", action="store_true",
                    help="merge observed results into the evidence file after review")
     p.add_argument("--reviewed-by", default="owner")
+    p.add_argument("--pace", type=float, default=2.0, metavar="SECONDS",
+                   help="pause between probes so Bridge can apply each change (default 2)")
+    p.add_argument("--stop-on-error", action="store_true",
+                   help="stop at the first failed probe and leave its state for diagnosis")
+    p.add_argument("--cleanup", action="store_true",
+                   help="list leftover probe mailboxes and delete them (with "
+                        "--yes-dedicated-test-account); probe messages elsewhere are "
+                        "only reported")
 
     ix = sub.add_parser("index", help="local metadata/full-text index (non-live storage modes)"
                         ).add_subparsers(dest="sub", required=True)
@@ -670,6 +678,18 @@ class Cli:
         from ..config import config_dir
         from . import probe
 
+        if self.a.cleanup:
+            cfg = load_service_config(self.dir)
+            store = open_store(cfg.account(self.a.account))
+            try:
+                result = probe.cleanup_leftovers(store, delete=self.a.yes_dedicated_test_account)
+            finally:
+                store.close()
+            _dump(result)
+            if not self.a.yes_dedicated_test_account:
+                print("Nothing deleted. Re-run with --yes-dedicated-test-account to delete "
+                      "the listed probe mailboxes.")
+            return 0
         if not self.a.yes_dedicated_test_account:
             raise CliError("the probe creates and deletes mailboxes and messages; run it only "
                            "against a dedicated test account and pass "
@@ -679,7 +699,8 @@ class Cli:
         store = open_store(acct)
         try:
             prober = probe.Prober(acct, store, open_transport(acct) if self.a.send_to else None,
-                                  send_to=self.a.send_to)
+                                  send_to=self.a.send_to, pace=self.a.pace,
+                                  stop_on_error=self.a.stop_on_error)
             report = prober.run()
         finally:
             store.close()

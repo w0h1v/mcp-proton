@@ -83,6 +83,15 @@ Evidence is read from two places and merged: the packaged `src/mcp_proton/compat
 
 Do not record message contents, addresses or credentials in the evidence file. Review the `observed` fields before you commit them.
 
+## Observed Bridge behaviour
+
+Findings from live runs. They are not evidence records (those come from `mcp-proton probe --record`), but they changed the adapter.
+
+| Date | Observation | Consequence |
+|---|---|---|
+| 2026-10-09 | After a successful `UID EXPUNGE 1` in a label mailbox, `UID SEARCH UID 1` returned `NO ... no such message` instead of an empty result (RFC 3501). Expunge in the label mailbox removed the label (Proton API returned 200). | The adapter never names possibly-missing UIDs in a search; it lists `UID SEARCH ALL` and intersects. Reads retry once with present UIDs when Bridge rejects a missing one. "no such message" is reported as a missing message, not a missing mailbox. |
+| 2026-10-09 | An unpaced full probe run was followed by a Bridge sync error (UserBadEvent). A paced rerun (stop on first error) did not reproduce it. Cause not established. | The probe pauses between steps by default (`--pace`, 2 s) and supports `--stop-on-error`. |
+
 ## Rerunning tests
 
 Rerun the live acceptance tests:

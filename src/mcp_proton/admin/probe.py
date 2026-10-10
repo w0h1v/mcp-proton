@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import json
 import platform
+import re
 import secrets
 import smtplib
 import time
@@ -70,8 +71,15 @@ def _raw(subject: str, frm: str, to: str, date: datetime | None = None,
 class Prober:
     def __init__(self, account: AccountConfig, store: MailStore,
                  transport: MailTransport | None = None, send_to: str | None = None,
-                 sent_wait: float = 30.0, log: Callable[[str], None] = print) -> None:
+                 sent_wait: float = 30.0, log: Callable[[str], None] = print,
+                 pace: float = 2.0, stop_on_error: bool = False) -> None:
         self.account = account
+        # Pause between probes so Bridge can apply each change before the next one.
+        # An unpaced run against live Bridge triggered a sync error (UserBadEvent) that a
+        # paced rerun did not reproduce.
+        self.pace = max(0.0, pace)
+        self.stop_on_error = stop_on_error
+        self.stopped_at: str | None = None
         self.store = store
         self.transport = transport
         self.send_to = send_to
@@ -121,6 +129,10 @@ class Prober:
 
     def _run(self, probe: str, operation: str, fn: Callable[[], dict[str, Any]],
              note: str | None = None) -> None:
+        if self.stopped_at is not None:
+            self.report.observations.append(Observation(
+                probe, operation, "skipped", note=f"stopped after error in {self.stopped_at}"))
+            return
         self.log(f"probe: {probe}")
         try:
             obs = Observation(probe, operation, "observed", fn(), note)
@@ -131,6 +143,10 @@ class Prober:
         except Exception as e:  # noqa: BLE001 - record and continue with other probes
             obs = Observation(probe, operation, "error", {"error": type(e).__name__}, note)
         self.report.observations.append(obs)
+        if obs.outcome == "error" and self.stop_on_error:
+            self.stopped_at = probe
+        if self.pace:
+            time.sleep(self.pace)
 
     # ---------------------------------------------------------------- probes
     def probe_mailboxes(self) -> dict[str, Any]:
@@ -303,7 +319,13 @@ class Prober:
                       self.probe_folder_delete_effect)
             self._run("idle", "new mail, flags, memberships, deletions", self.probe_idle)
         finally:
-            self.cleanup()
+            if self.stopped_at is None:
+                self.cleanup()
+            else:
+                # Leave the state as it was at the failure for diagnosis.
+                self.log(f"stopped after an error in {self.stopped_at}; probe mailboxes were "
+                         "left in place. Remove them with: mcp-proton probe <account> "
+                         "--cleanup --yes-dedicated-test-account")
         self.report.finished_at = datetime.now(UTC).isoformat()
         return self.report
 
@@ -323,6 +345,47 @@ class Prober:
 
 class _Skip(Exception):  # noqa: N818
     pass
+
+
+PROBE_MESSAGE_DOMAIN = f"{PROBE_PREFIX}.invalid"
+# Exactly the names Prober creates: "<prefix>-<UTC %Y%m%d%H%M%S>" and the "-b" second folder.
+# Cleanup deletes only these, never a mailbox that merely starts with the prefix.
+PROBE_NAME_RE = re.compile(rf"{re.escape(PROBE_PREFIX)}-\d{{14}}(-b)?")
+
+
+def find_leftovers(store: MailStore) -> dict[str, Any]:
+    """Probe mailboxes (by name prefix) and synthetic probe messages elsewhere."""
+    boxes = [m for m in store.list_mailboxes()
+             if PROBE_NAME_RE.fullmatch(m.name.rsplit(m.delimiter or "/", 1)[-1])]
+    messages: dict[str, int] = {}
+    probe_names = {b.name for b in boxes}
+    for m in store.list_mailboxes():
+        if not m.selectable or m.name in probe_names:
+            continue
+        try:
+            _, uids = store.list_uids(m.name, ["HEADER", "Message-ID", PROBE_MESSAGE_DOMAIN])
+        except MailError:
+            continue
+        if uids:
+            messages[m.name] = len(uids)
+    return {"mailboxes": sorted(probe_names), "messages_elsewhere": messages}
+
+
+def cleanup_leftovers(store: MailStore, *, delete: bool) -> dict[str, Any]:
+    """Delete leftover probe mailboxes only. Synthetic probe messages outside them are
+    reported, never deleted: removing them would be a permanent deletion."""
+    found = find_leftovers(store)
+    deleted: list[str] = []
+    failed: dict[str, str] = {}
+    if delete:
+        # Children before parents.
+        for name in sorted(found["mailboxes"], key=len, reverse=True):
+            try:
+                store.delete_mailbox(name)
+                deleted.append(name)
+            except MailError as e:
+                failed[name] = e.code.value
+    return {**found, "deleted": deleted, "failed": failed}
 
 
 # Probes whose observation is acceptance evidence for an inventory operation only

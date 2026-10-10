@@ -219,6 +219,11 @@ def _check_flag(flag: str, *, allow_system: bool = True) -> None:
         raise invalid("invalid flag or keyword", flag=flag[:40])
 
 
+def _is_no_such_message(low: str) -> bool:
+    """Bridge's rejection of commands naming missing UIDs ("no such message")."""
+    return "no such message" in low
+
+
 def _uid_set(uids: list[int]) -> str:
     """Compress sorted UIDs to ranges ('1:3,7')."""
     nums = sorted({int(u) for u in uids})
@@ -540,6 +545,8 @@ class ImapMailStore:
             return MailError(ErrorCode.UNSUPPORTED, "mailbox is read-only")
         if any(k in low for k in ("alreadyexists", "already exists")):
             return MailError(ErrorCode.CONFLICT, f"{what}: mailbox already exists")
+        if _is_no_such_message(low):
+            return MailError(ErrorCode.NOT_FOUND, f"{what}: message no longer exists")
         if any(k in low for k in ("trycreate", "nonexistent", "does not exist", "doesn't exist",
                                   "no such", "not found", "unknown mailbox")):
             return MailError(ErrorCode.NOT_FOUND, f"{what}: mailbox not found")
@@ -800,7 +807,7 @@ class ImapMailStore:
             self._open(conn, mailbox, uidvalidity, write=False)
             data: dict[int, dict[bytes, Any]] = {}
             for chunk in _chunks(list(uids)):
-                data.update(conn.client.fetch(chunk, fields))
+                data.update(self._fetch_present(conn, chunk, fields))
             return data
 
         data = self._exec(run, retry=True, what="fetch")
@@ -834,7 +841,8 @@ class ImapMailStore:
 
         def run(conn: _Conn) -> dict[int, dict[bytes, Any]]:
             self._open(conn, mailbox, uidvalidity, write=False)
-            return conn.client.fetch([uid], ["FLAGS", "INTERNALDATE", "RFC822.SIZE", section])
+            return ImapMailStore._fetch_present(
+                conn, [uid], ["FLAGS", "INTERNALDATE", "RFC822.SIZE", section])
 
         item = self._exec(run, retry=True, what="fetch").get(uid)
         if item is None:
@@ -862,9 +870,33 @@ class ImapMailStore:
     def _flags_of(conn: _Conn, uids: list[int]) -> dict[int, list[str]]:
         out: dict[int, list[str]] = {}
         for chunk in _chunks(list(uids)):
-            for uid, item in conn.client.fetch(chunk, ["FLAGS"]).items():
+            for uid, item in ImapMailStore._fetch_present(conn, chunk, ["FLAGS"]).items():
                 out[uid] = _flags(item.get(b"FLAGS"))
         return out
+
+    @staticmethod
+    def _fetch_present(conn: _Conn, uids: list[int], fields: list[str]
+                       ) -> dict[int, dict[bytes, Any]]:
+        """UID FETCH that tolerates UIDs that no longer exist.
+
+        RFC 3501 servers answer a UID FETCH naming missing UIDs with OK and no data.
+        Proton Bridge instead rejects the whole command with ``NO ... no such message``
+        (observed live, 2026-10-09). Reads are side-effect free, so on that error retry
+        once with only the UIDs still present.
+        """
+        try:
+            return dict(conn.client.fetch(uids, fields))
+        except imaplib.IMAP4.error as exc:
+            if isinstance(exc, imaplib.IMAP4.abort) or not _is_no_such_message(str(exc).lower()):
+                raise
+        present = sorted(ImapMailStore._present(conn) & set(uids))
+        return dict(conn.client.fetch(present, fields)) if present else {}
+
+    @staticmethod
+    def _present(conn: _Conn) -> set[int]:
+        """All UIDs in the selected mailbox. Never names a specific UID, so it cannot
+        trip Bridge's rejection of searches for missing UIDs."""
+        return {int(u) for u in conn.client.search(["ALL"])}
 
     # ------------------------------------------------------------ mutation
 
@@ -1009,10 +1041,9 @@ class ImapMailStore:
 
     @staticmethod
     def _existing(conn: _Conn, uids: list[int]) -> set[int]:
-        found: set[int] = set()
-        for chunk in _chunks(uids):
-            found.update(conn.client.search(["UID", _uid_set(chunk)]))
-        return found & set(uids)
+        # Not "UID SEARCH UID <set>": Bridge answers NO when the set names a UID that
+        # no longer exists, which is exactly the case after a successful expunge.
+        return ImapMailStore._present(conn) & set(uids)
 
     def _mailbox_op(self, what: str, fn: Callable[[Any], Any], *, structural: bool = False
                     ) -> None:
