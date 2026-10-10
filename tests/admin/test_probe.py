@@ -86,3 +86,22 @@ def test_cleanup_reports_but_never_deletes_probe_messages_elsewhere(imap_server)
         assert len(store.list_uids("Trash")[1]) == 1  # still there
     finally:
         store.close()
+
+
+def test_cleanup_only_matches_generated_probe_names(imap_server):
+    acct = _acct(imap_server)
+    store = open_store(acct)
+    try:
+        lookalikes = ["Folders/mcp-proton-probe", "Folders/mcp-proton-probearchive",
+                      "Labels/mcp-proton-probe-notes", "Folders/mcp-proton-probe-2026"]
+        generated = ["Folders/mcp-proton-probe-20261009182500",
+                     "Folders/mcp-proton-probe-20261009182500-b",
+                     "Labels/mcp-proton-probe-20261009182500"]
+        for name in lookalikes + generated:
+            store.create_mailbox(name)
+        result = probe.cleanup_leftovers(store, delete=True)
+        assert sorted(result["deleted"]) == sorted(generated)
+        names = {m.name for m in store.list_mailboxes()}
+        assert set(lookalikes) <= names
+    finally:
+        store.close()

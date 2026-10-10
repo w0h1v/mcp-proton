@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import json
 import platform
+import re
 import secrets
 import smtplib
 import time
@@ -347,12 +348,15 @@ class _Skip(Exception):  # noqa: N818
 
 
 PROBE_MESSAGE_DOMAIN = f"{PROBE_PREFIX}.invalid"
+# Exactly the names Prober creates: "<prefix>-<UTC %Y%m%d%H%M%S>" and the "-b" second folder.
+# Cleanup deletes only these, never a mailbox that merely starts with the prefix.
+PROBE_NAME_RE = re.compile(rf"{re.escape(PROBE_PREFIX)}-\d{{14}}(-b)?")
 
 
 def find_leftovers(store: MailStore) -> dict[str, Any]:
     """Probe mailboxes (by name prefix) and synthetic probe messages elsewhere."""
     boxes = [m for m in store.list_mailboxes()
-             if m.name.rsplit(m.delimiter or "/", 1)[-1].startswith(PROBE_PREFIX)]
+             if PROBE_NAME_RE.fullmatch(m.name.rsplit(m.delimiter or "/", 1)[-1])]
     messages: dict[str, int] = {}
     probe_names = {b.name for b in boxes}
     for m in store.list_mailboxes():
