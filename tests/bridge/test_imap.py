@@ -225,6 +225,34 @@ def test_attachment_parts_from_rfc3501_structure():
     assert not imap_mod._attachments_match(None, SearchQuery(has_attachment=False))
 
 
+def test_attachment_parts_review_cases():
+    text = (b"text", b"plain", None, None, None, b"7bit", 10, 1, None, None, None, None)
+    # message/rfc822: index 7 is the envelope (a tuple starting with a byte date), the
+    # disposition is at index 11
+    envelope = (b"Thu, 01 Oct 2026 10:00:00 +0000", b"inner", None, None, None, None,
+                None, None, None, b"<i@x>")
+    inner = (b"text", b"plain", None, None, None, b"7bit", 5, 1)
+    fwd = (b"message", b"rfc822", None, None, None, b"7bit", 300, envelope, inner, 12, None,
+           (b"attachment", (b"filename", b"forwarded.eml")), None, None)
+    # a PDF with neither filename nor disposition still counts, as attachments_list does
+    bare_pdf = (b"application", b"pdf", None, None, None, b"base64", 100, None, None,
+                None, None)
+    # RFC 2231 continuation: filename*0* / filename*1*
+    long_name = (b"application", b"zip", None, None, None, b"base64", 100, None,
+                 (b"attachment", (b"filename*0*", b"utf-8''Very%20long%20",
+                                  b"filename*1*", b"na%C3%AFve.zip")), None, None)
+    structure = ([text, fwd, bare_pdf, long_name], b"mixed", None, None, None, None)
+    assert imap_mod._attachment_parts(structure) == [
+        ("message/rfc822", "forwarded.eml"), ("application/pdf", None),
+        ("application/zip", "Very long naïve.zip")]
+    match = imap_mod._attachments_match
+    assert match(structure, SearchQuery(attachment_name="forwarded"))
+    assert match(structure, SearchQuery(attachment_type="application/pdf"))
+    assert match(structure, SearchQuery(attachment_name="NAÏVE"))
+    only_text = ([text, text], b"alternative", None, None, None, None)
+    assert imap_mod._attachment_parts(only_text) == []
+
+
 def test_attachment_filters_are_top_level_only():
     from pydantic import ValidationError
 

@@ -39,8 +39,8 @@ from datetime import UTC, date, datetime
 from email.header import decode_header, make_header
 from email.message import Message
 from email.parser import BytesHeaderParser
+from email.utils import collapse_rfc2231_value, decode_params, unquote
 from typing import Any
-from urllib.parse import unquote
 
 from imapclient import IMAPClient
 from imapclient.datetime_util import format_criteria_date
@@ -333,60 +333,69 @@ ATTACHMENT_FILTER_MAX = 5000
 
 
 def _param(params: Any, name: str) -> str | None:
-    """A MIME parameter from a BODYSTRUCTURE (k, v, k, v, ...) tuple, decoded."""
+    """A MIME parameter from a BODYSTRUCTURE (k, v, k, v, ...) tuple, decoded: RFC 2231
+    (including continuations such as filename*0*, filename*1*) and RFC 2047."""
     if not isinstance(params, (tuple, list)):
         return None
-    pairs = dict(zip(params[::2], params[1::2], strict=False))
-    for key, value in pairs.items():
-        k = (_text(key) or "").lower()
-        v = _text(value)
-        if v is None:
+    pairs = [((_text(k) or "").lower(), _text(v) or "")
+             for k, v in zip(params[::2], params[1::2], strict=False)]
+    # decode_params keeps the first pair as the content type, so lead with a dummy.
+    for key, value in decode_params([("x", ""), *pairs])[1:]:
+        if key.lower() != name:
             continue
-        if k == name:
-            try:
-                return str(make_header(decode_header(v)))  # RFC 2047
-            except (ValueError, LookupError):
-                return v
-        if k == name + "*":  # RFC 2231: charset'lang'percent-encoded
-            charset, _, rest = v.partition("'")
-            _, _, encoded = rest.partition("'")
-            try:
-                return unquote(encoded or v, encoding=charset or "utf-8", errors="replace")
-            except LookupError:
-                return unquote(encoded or v, errors="replace")
+        text = unquote(collapse_rfc2231_value(value))  # decode_params adds quotes
+        try:
+            return str(make_header(decode_header(text))) or None  # RFC 2047
+        except (ValueError, LookupError):
+            return text or None
     return None
 
 
-def _attachment_parts(part: Any, parent_subtype: str = "") -> list[tuple[str, str | None]]:
-    """(MIME type, filename) of each attachment-like leaf part: one with a filename,
-    an attachment disposition, or an attached message."""
+def _attachment_parts(part: Any) -> list[tuple[str, str | None]]:
+    """(MIME type, filename) of each attachment leaf, by the rule the attachment tools
+    use (bridge.mime._is_attachment): an attached message, an attachment disposition,
+    a filename, or any leaf other than text/plain and text/html."""
     if isinstance(part[0], list):
-        subtype = (_text(part[1]) or "").lower()
-        return [p for child in part[0] for p in _attachment_parts(child, subtype)]
+        return [p for child in part[0] for p in _attachment_parts(child)]
     mime_type = f"{(_text(part[0]) or '').lower()}/{(_text(part[1]) or '').lower()}"
     disposition, filename = _disposition(part)
     name = filename or _param(part[2], "name")
-    if name or disposition == "attachment" or mime_type == "message/rfc822":
+    if (mime_type.startswith("message/") or disposition == "attachment" or name
+            or mime_type not in ("text/plain", "text/html")):
         return [(mime_type, name)]
     return []
+
+
+def _disposition_index(part: Any) -> int:
+    """Where a leaf BODYSTRUCTURE carries its disposition (RFC 3501 body-ext-1part):
+    after the basic fields, plus the line count for text parts, plus the envelope,
+    body and line count for message/rfc822."""
+    maintype = (_text(part[0]) or "").lower()
+    subtype = (_text(part[1]) or "").lower()
+    if maintype == "text":
+        return 9
+    if maintype == "message" and subtype == "rfc822":
+        return 11
+    return 8
 
 
 def _disposition(part: Any) -> tuple[str | None, str | None]:
     """(disposition, filename) of a leaf part. RFC 3501 sends the disposition as
     ("attachment" ("filename" "x.pdf")); some servers send the raw header value
     instead (b'attachment; filename="x.pdf"'), so both are read."""
-    for item in part[7:]:
-        if isinstance(item, tuple) and item and isinstance(item[0], bytes):
-            kind = item[0].decode("ascii", "replace").lower()
-            return kind, _param(item[1] if len(item) > 1 else None, "filename")
-        if isinstance(item, bytes) and item.lower().startswith((b"attachment", b"inline")):
-            header = Message()
-            header["Content-Disposition"] = item.decode("utf-8", "replace")
-            filename = header.get_filename()
-            if filename:
-                with contextlib.suppress(ValueError, LookupError):
-                    filename = str(make_header(decode_header(filename)))
-            return header.get_content_disposition(), filename
+    idx = _disposition_index(part)
+    item = part[idx] if len(part) > idx else None
+    if isinstance(item, tuple) and item and isinstance(item[0], bytes):
+        kind = item[0].decode("ascii", "replace").lower()
+        return kind, _param(item[1] if len(item) > 1 else None, "filename")
+    if isinstance(item, bytes) and item.lower().startswith((b"attachment", b"inline")):
+        header = Message()
+        header["Content-Disposition"] = item.decode("utf-8", "replace")
+        filename = header.get_filename()
+        if filename:
+            with contextlib.suppress(ValueError, LookupError):
+                filename = str(make_header(decode_header(filename)))
+        return header.get_content_disposition(), filename
     return None, None
 
 
