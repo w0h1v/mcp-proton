@@ -171,6 +171,8 @@ class MessageSummary(Model):
     provider_id: str | None = Field(default=None, exclude=True)
     # Set by multi-mailbox searches: every mailbox this message was found in.
     occurrences: list[Occurrence] | None = None
+    # Set by searches with snippets: a short excerpt of the body text (untrusted).
+    snippet: str | None = None
 
 
 class MessageBody(Model):

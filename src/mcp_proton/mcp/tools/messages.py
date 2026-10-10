@@ -64,6 +64,31 @@ def build(gw: Gateway) -> LocalProvider:
 
         return gw.read(run)
 
+    @gw.tool(p, "messages_get_many",
+             f"Fetch several messages in one call (at most {messages.GET_MANY_MAX}): headers, "
+             "sanitized body and attachment list for each. Each item holds the message or "
+             "the error for that handle. Reading never marks anything read.",
+             title="Get several messages")
+    def messages_get_many(
+        handles: Annotated[list[str], Field(
+            min_length=1, max_length=messages.GET_MANY_MAX,
+            description="Message handles from a listing or search.")],
+        include_headers: Annotated[bool, Field(description="Include all raw headers.")] = False,
+        include_body: bool = True,
+        body_format: Literal["text", "html", "both"] = "text",
+        max_body_chars: Annotated[int, Field(
+            ge=500, le=200_000,
+            description="Body characters per message; longer bodies are truncated.")
+        ] = 20_000,
+    ) -> dict[str, Any]:
+        def run(c: Any) -> dict[str, Any]:
+            items = messages.get_many(app, c, handles, include_headers=include_headers,
+                                      include_body=include_body, body_format=body_format,
+                                      max_body_chars=max_body_chars)
+            return {"items": items, "notice": UNTRUSTED}
+
+        return gw.read(run)
+
     @gw.tool(p, "messages_get_raw",
              f"Fetch the raw RFC 822 source (base64, at most {MAX_RAW_BYTES // 1024 // 1024} MiB). "
              "Only available when both body and attachment release are permitted.",
@@ -96,9 +121,14 @@ def build(gw: Gateway) -> LocalProvider:
         account_wide: Annotated[bool, Field(
             description="Search every mailbox you may read, including All Mail (not "
                         "Starred). Cannot be combined with mailboxes.")] = False,
+        snippets: Annotated[bool, Field(
+            description="Add a short excerpt of each result's body text, centred on the "
+                        "first body/text term. Untrusted content; omitted when policy "
+                        "does not release bodies.")] = False,
     ) -> dict[str, Any]:
         return gw.read(lambda c: messages.search(app, c, account, query, mailboxes, limit,
-                                                 cursor, account_wide=account_wide))
+                                                 cursor, account_wide=account_wide,
+                                                 snippets=snippets))
 
     @gw.tool(p, "messages_bulk_preview",
              "Preview a bulk change without applying it: occurrences per mailbox, a heuristic "

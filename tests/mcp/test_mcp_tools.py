@@ -301,3 +301,19 @@ async def test_search_attachment_filters(app, seed):
             "account": ACCOUNT, "query": {"any_of": [{"has_attachment": True},
                                                      {"subject": "x"}]}})
         assert "only supported at the top level" in str(bad["error"])
+
+
+async def test_get_many_and_search_snippets(app, seed):
+    a, b = seed(n=2, subject="Batch read", body="The quick brown fox")
+    async with client_for(app) as c:
+        tools = {t.name: t for t in await c.list_tools()}
+        ann = tools["messages_get_many"].annotations
+        assert ann.read_only_hint is True and ann.destructive_hint is False
+        res = await call(c, "messages_get_many", {"handles": [a, b]})
+        assert [i["message"]["subject"] for i in res["items"]] == ["Batch read"] * 2
+        assert "untrusted" in res["notice"]
+        too_many = await call(c, "messages_get_many", {"handles": [a] * 21})
+        assert "error" in too_many
+        found = await call(c, "messages_search", {
+            "account": ACCOUNT, "query": {"body": "brown"}, "snippets": True})
+        assert all("brown fox" in i["snippet"] for i in found["items"])

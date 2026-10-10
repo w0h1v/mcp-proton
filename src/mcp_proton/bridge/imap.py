@@ -24,9 +24,12 @@ says so until live acceptance tests exist.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import contextlib
 import imaplib
 import logging
+import quopri
 import re
 import select
 import socket
@@ -57,8 +60,15 @@ from ..domain.models import (
     MessageSummary,
     SearchQuery,
 )
-from . import credentials, tls
-from .ports import AppendResult, CapabilityReport, CopyResult, FetchedMessage, MessageIdentity
+from . import credentials, mime, tls
+from .ports import (
+    PREVIEW_FETCH_BYTES,
+    AppendResult,
+    CapabilityReport,
+    CopyResult,
+    FetchedMessage,
+    MessageIdentity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -421,6 +431,61 @@ def _attachments_match(structure: Any, query: SearchQuery) -> bool:
                    for t, _ in parts):
             return False
     return True
+
+
+@dataclass(frozen=True)
+class _TextSection:
+    section: str  # IMAP part number, such as "1" or "1.2"
+    encoding: str
+    charset: str
+    html: bool
+
+
+def _text_section(structure: Any) -> _TextSection | None:
+    """The body's text part: the first text/plain leaf that is not an attachment, else
+    the first such text/html leaf. Attached messages are not entered."""
+    found: dict[str, _TextSection] = {}
+
+    def walk(part: Any, number: str) -> None:
+        if isinstance(part[0], list):
+            for i, child in enumerate(part[0], start=1):
+                walk(child, f"{number}.{i}" if number else str(i))
+            return
+        maintype = (_text(part[0]) or "").lower()
+        subtype = (_text(part[1]) or "").lower()
+        if maintype != "text" or subtype not in ("plain", "html") or subtype in found:
+            return
+        disposition, filename = _disposition(part)
+        if disposition == "attachment" or filename:
+            return
+        found[subtype] = _TextSection(
+            section=number or "1", encoding=(_text(part[5]) or "7bit").lower(),
+            charset=_param(part[2], "charset") or "utf-8", html=subtype == "html")
+
+    try:
+        walk(structure, "")
+    except (TypeError, ValueError, IndexError, AttributeError):
+        return None
+    return found.get("plain") or found.get("html")
+
+
+def _decode_preview(data: bytes, sec: _TextSection) -> str:
+    """Decode the first bytes of a text part. The cut may fall mid-sequence, so
+    decoding is lenient and whatever cannot be decoded is dropped."""
+    if sec.encoding == "base64":
+        compact = re.sub(rb"[^A-Za-z0-9+/=]", b"", data)
+        compact = compact[: len(compact) - len(compact) % 4]
+        try:
+            data = base64.b64decode(compact)
+        except (ValueError, binascii.Error):
+            return ""
+    elif sec.encoding == "quoted-printable":
+        data = quopri.decodestring(data)
+    try:
+        text = data.decode(sec.charset, errors="replace")
+    except LookupError:
+        text = data.decode("utf-8", errors="replace")
+    return mime.html_to_text(text) if sec.html else text
 
 
 def _has_attachments(structure: Any) -> bool | None:
@@ -1007,6 +1072,38 @@ class ImapMailStore:
                                 provider_id=_provider_id(item),
                                 message_id=_header_field(item, "Message-ID"))
                 for uid in uids if (item := data.get(uid)) is not None]
+
+    def fetch_text_previews(self, mailbox: str, uidvalidity: int, uids: list[int],
+                            max_bytes: int = PREVIEW_FETCH_BYTES) -> dict[int, str]:
+        """The start of each message's body text, from a partial FETCH of its text part
+        (never the whole message). Messages without a text part are left out."""
+        if not uids:
+            return {}
+
+        def run(conn: _Conn) -> dict[int, str]:
+            self._open(conn, mailbox, uidvalidity, write=False)
+            sections: dict[int, _TextSection] = {}
+            for chunk in _chunks(list(uids)):
+                for uid, item in self._fetch_present(conn, chunk, ["BODYSTRUCTURE"]).items():
+                    sec = _text_section(item.get(b"BODYSTRUCTURE"))
+                    if sec is not None:
+                        sections[uid] = sec
+            by_section: dict[str, list[int]] = {}
+            for uid, sec in sections.items():
+                by_section.setdefault(sec.section, []).append(uid)
+            out: dict[int, str] = {}
+            for section, group in by_section.items():
+                field = f"BODY.PEEK[{section}]<0.{max_bytes}>"
+                for chunk in _chunks(group):
+                    for uid, item in self._fetch_present(conn, chunk, [field]).items():
+                        data = next((v for k, v in item.items()
+                                     if k.startswith(b"BODY[") and isinstance(v, bytes)), None)
+                        if data is not None:
+                            out[uid] = _decode_preview(data, sections[uid])
+            return out
+
+        result: dict[int, str] = self._exec(run, retry=True, what="fetch")
+        return result
 
     def fetch_message(self, mailbox: str, uidvalidity: int, uid: int,
                       header_only: bool = False) -> FetchedMessage:

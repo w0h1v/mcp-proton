@@ -28,3 +28,5 @@ Not released. Implemented and tested against fake IMAP/SMTP servers only; not ye
 - The probe checks OR, NOT, nested and non-ASCII searches against Bridge, and `probe --record-report` records a reviewed report without rerunning the probe.
 - `messages_search` takes `account_wide` to search every readable mailbox, including All Mail. Over several mailboxes, each result is one message with an `occurrences` list, grouped by Proton's message ID (`X-Pm-Internal-Id`), else by Message-ID.
 - Search filters `has_attachment`, `attachment_name` (filename contains, case-insensitive) and `attachment_type` (`application/pdf`, or a prefix such as `image/`). IMAP cannot search them, so they are applied from each match's MIME structure; they apply to bulk previews and rules too.
+- `messages_get_many` reads up to 20 messages in one call, each with its own result or error.
+- `messages_search` takes `snippets` to add a short excerpt of each result's body, centred on the first body/text term. It reads only the first 4 KB of each message's text part, and is omitted when policy does not release bodies.

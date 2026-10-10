@@ -253,6 +253,48 @@ def test_attachment_parts_review_cases():
     assert imap_mod._attachment_parts(only_text) == []
 
 
+def _shaped(subject, body=None, html=None, cte=None, attach=False):
+    m = EmailMessage()
+    m["Subject"], m["From"], m["To"] = subject, "a@x.test", "b@x.test"
+    if body is not None:
+        if cte:
+            m.set_content(body, cte=cte)
+        else:
+            m.set_content(body)
+    if html is not None:
+        if body is None:
+            m.set_content(html, subtype="html")
+        else:
+            m.add_alternative(html, subtype="html")
+    if attach:
+        m.add_attachment(b"%PDF" * 5000, maintype="application", subtype="pdf",
+                         filename="x.pdf")
+    return m.as_bytes()
+
+
+def test_text_previews_read_only_the_text_part(store, monkeypatch):
+    shapes = {"plain": _shaped("p", "Hello plain world"),
+              "b64": _shaped("b", "Grüße aus Köln " * 50, cte="base64"),
+              "qp": _shaped("q", "Café crème " * 40, cte="quoted-printable"),
+              "html": _shaped("h", html="<p>Only <b>html</b> here</p>"),
+              "alt": _shaped("a", "plain wins", html="<p>html loses</p>"),
+              "att": _shaped("t", "body before pdf", attach=True)}
+    uids = {k: store.append("INBOX", raw).uid for k, raw in shapes.items()}
+    uv = store.mailbox_status("INBOX").uidvalidity
+    sent = _wire(monkeypatch)
+    out = store.fetch_text_previews("INBOX", uv, list(uids.values()), max_bytes=200)
+    got = {k: out[uid].strip() for k, uid in uids.items()}
+    assert got["plain"] == "Hello plain world"
+    assert got["b64"].startswith("Grüße aus Köln Grüße")
+    assert got["qp"].startswith("Café crème Café")
+    assert got["html"] == "Only html here"
+    assert got["alt"] == "plain wins"
+    assert got["att"] == "body before pdf"
+    # partial fetches of a section only; never the whole message
+    wire = b"".join(sent)
+    assert b"BODY.PEEK[" in wire and b"<0.200>" in wire and b"BODY.PEEK[]" not in wire
+
+
 def test_attachment_filters_are_top_level_only():
     from pydantic import ValidationError
 

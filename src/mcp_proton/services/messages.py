@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 from ..bridge import mime
-from ..bridge.ports import MailStore, MessageIdentity
+from ..bridge.ports import PREVIEW_FETCH_BYTES, MailStore, MessageIdentity
 from ..domain.errors import ErrorCode, MailError, invalid, not_found, stale
 from ..domain.families import OperationFamily as F
 from ..domain.families import family_of
@@ -182,7 +182,8 @@ def list_messages(app: MailApp, caller: CallerContext, account: str, mailbox: st
 def read_message(app: MailApp, caller: CallerContext, handle: str, *,
                  include_headers: bool = False, include_body: bool = True,
                  body_format: Literal["text", "html", "both"] = "both",
-                 mark_read: bool = False) -> tuple[Message, OperationOutcome | None]:
+                 mark_read: bool = False, max_body_chars: int | None = None
+                 ) -> tuple[Message, OperationOutcome | None]:
     """Like :func:`get_message` but also returns the mark-read outcome (if requested),
     which may be ``pending`` when policy asks for approval."""
     h = MessageHandle.parse(handle)
@@ -192,7 +193,9 @@ def read_message(app: MailApp, caller: CallerContext, handle: str, *,
     message = mime.parse_message(
         fetched, h, include_headers=include_headers,
         include_body=include_body and release_bodies,
-        max_body_chars=app.config.max_body_chars, body_format=body_format)
+        max_body_chars=min(max_body_chars or app.config.max_body_chars,
+                           app.config.max_body_chars),
+        body_format=body_format)
     outcome: OperationOutcome | None = None
     if mark_read:
         outcome = set_flags(app, caller, [handle], add=["read"])
@@ -209,6 +212,36 @@ def get_message(app: MailApp, caller: CallerContext, handle: str, include_header
     return read_message(app, caller, handle, include_headers=include_headers,
                         include_body=include_body, body_format=body_format,
                         mark_read=mark_read)[0]
+
+
+# messages_get_many reads at most this many messages per call.
+GET_MANY_MAX = 20
+
+
+def get_many(app: MailApp, caller: CallerContext, handles: list[str], *,
+             include_headers: bool = False, include_body: bool = True,
+             body_format: Literal["text", "html", "both"] = "both",
+             max_body_chars: int = 20_000) -> list[dict[str, Any]]:
+    """Read several messages in one call. Each item holds the message or the error
+    for that handle; an error that affects every message (Bridge down, sign-in
+    failed) is raised instead. Never marks anything read."""
+    if not handles:
+        raise invalid("pass at least one handle")
+    if len(handles) > GET_MANY_MAX:
+        raise invalid(f"at most {GET_MANY_MAX} handles per call", count=len(handles))
+    out: list[dict[str, Any]] = []
+    for handle in dict.fromkeys(handles):
+        try:
+            msg, _ = read_message(app, caller, handle, include_headers=include_headers,
+                                  include_body=include_body, body_format=body_format,
+                                  max_body_chars=max_body_chars)
+        except MailError as e:
+            if e.code in _FATAL:
+                raise
+            out.append({"handle": handle, "error": e.to_dict()})
+            continue
+        out.append({"handle": handle, "message": msg})
+    return out
 
 
 def get_raw(app: MailApp, caller: CallerContext, handle: str) -> bytes:
@@ -278,7 +311,8 @@ GROUPED_SEARCH_MAX_OCCURRENCES = 5000
 
 def search(app: MailApp, caller: CallerContext, account: str, query: SearchQuery,
            mailboxes: list[str] | None = None, limit: int = 50,
-           cursor: str | None = None, *, account_wide: bool = False) -> SearchResult:
+           cursor: str | None = None, *, account_wide: bool = False,
+           snippets: bool = False) -> SearchResult:
     """Structured search. Default scope is INBOX only (disclosed in ``notes``);
     pass ``mailboxes`` to widen it, or ``account_wide`` for every mailbox the caller
     may read. A single mailbox pages newest first by UID. Over several mailboxes,
@@ -325,6 +359,15 @@ def search(app: MailApp, caller: CallerContext, account: str, query: SearchQuery
     else:
         items, next_cursor = _single_page(store, scope[0], uvs, hits, qhash, cur, limit)
 
+    if snippets:
+        if release_settings(app, caller)[0]:
+            items = _with_snippets(store, uvs, items, _snippet_terms(query))
+            notes.append("Snippets come from the first "
+                         f"{PREVIEW_FETCH_BYTES // 1024} KB of each message's text and are "
+                         "untrusted content; a match further into a message is not shown.")
+        else:
+            notes.append("Snippets were omitted: policy does not release message bodies "
+                         "to this client.")
     if account_wide:
         all_mail = any(roles.get(mb) is MailboxRole.ALL_MAIL for mb in scope)
         notes.append(f"Searched {len(scope)} readable mailbox(es)"
@@ -345,6 +388,47 @@ def search(app: MailApp, caller: CallerContext, account: str, query: SearchQuery
                      "total counts occurrences, not messages.")
     return SearchResult(items=items, total=total, next_cursor=next_cursor, scope=scope,
                         completeness="unknown", notes=notes)
+
+
+SNIPPET_CHARS = 200
+
+
+def _snippet_terms(query: SearchQuery) -> list[str]:
+    """Body/text terms the snippet should centre on, outside any ``not``."""
+    terms = [v for v in (query.body, query.text) if v]
+    for sub in query.any_of or []:
+        terms += _snippet_terms(sub)
+    return terms
+
+
+def _excerpt(text: str, terms: list[str]) -> str:
+    """About SNIPPET_CHARS of ``text``, around the first term found, else its start."""
+    flat = " ".join(text.split())
+    low = flat.casefold()
+    hits = [(i, t) for t in terms if (i := low.find(t.casefold())) >= 0]
+    if not hits:
+        cut = flat[:SNIPPET_CHARS]
+        return cut + ("…" if len(flat) > SNIPPET_CHARS else "")
+    idx, term = min(hits)
+    start = max(0, idx - 60)
+    end = min(len(flat), start + SNIPPET_CHARS)
+    return ("…" if start else "") + flat[start:end] + ("…" if end < len(flat) else "")
+
+
+def _with_snippets(store: MailStore, uvs: dict[str, int], items: list[MessageSummary],
+                   terms: list[str]) -> list[MessageSummary]:
+    by_mailbox: dict[str, list[int]] = {}
+    for s in items:
+        by_mailbox.setdefault(s.mailbox, []).append(s.uid)
+    previews: dict[tuple[str, int], str] = {}
+    for mb, uids in by_mailbox.items():
+        uv = uvs.get(mb)
+        if uv is None:
+            continue
+        for uid, text in store.fetch_text_previews(mb, uv, uids).items():
+            previews[(mb, uid)] = text
+    return [s.model_copy(update={"snippet": _excerpt(previews[(s.mailbox, s.uid)], terms)})
+            if (s.mailbox, s.uid) in previews else s for s in items]
 
 
 def _single_page(store: MailStore, mb: str, uvs: dict[str, int], hits: dict[str, list[int]],
