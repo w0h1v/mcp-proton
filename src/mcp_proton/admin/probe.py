@@ -316,6 +316,11 @@ class Prober:
             got = {k for k, uid in uids.items() if uid in found}
             out[name] = {"ok": True, "matches_expected": got == expect,
                          "expected": sorted(expect), "matched": sorted(got)}
+        failed = sorted(n for n, c in out.items() if not (c["ok"] and c["matches_expected"]))
+        if failed:
+            # An error outcome, so --stop-on-error stops and the run is not evidence.
+            raise MailError(ErrorCode.UNSUPPORTED_SEMANTICS,
+                            "search cases failed: " + ", ".join(failed), cases=out)
         return out
 
     def probe_drafts(self) -> dict[str, Any]:
@@ -408,7 +413,8 @@ class Prober:
                       self.probe_identity)
             self._run("import_internaldate", "EML and mbox import/export with manifests",
                       self.probe_import_internaldate)
-            self._run("search", "structured search: any_of, not, non-ASCII", self.probe_search)
+            self._run("search", "structured search translated to IMAP SEARCH",
+                      self.probe_search, note="any_of, not, nested and non-ASCII cases")
             self._run("drafts", "create, read, update, discard, send", self.probe_drafts)
             self._run_skippable("smtp_sent", "compose, reply, reply-all, forward inline/attachment",
                                 self.probe_smtp_sent_copy)

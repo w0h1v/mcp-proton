@@ -23,6 +23,11 @@ def test_probe_runs_and_cleans_up(imap_server, tmp_path):
     assert by["smtp_sent"].outcome == "skipped"
     assert by["flags"].outcome == "observed"
     assert by["label_copy_remove"].outcome == "observed"
+    # every observation is filed under an operation the capability inventory reads
+    from mcp_proton.services.inventory import ROWS
+
+    ops = {r.operation for r in ROWS}
+    assert {o.operation for o in report.observations} <= ops
     search = by["search"].observed
     assert set(search) == {"or", "not", "nested", "non_ascii_in_or"}
     assert all(c["ok"] and c["matches_expected"] for c in search.values()), search
@@ -331,3 +336,33 @@ def test_record_report_records_a_reviewed_report_without_running(tmp_path, monke
     bad = tmp_path / "bad.json"
     bad.write_text("{}")
     assert main(["probe", "t", "--record-report", str(bad)]) == 1
+
+
+def test_failed_search_case_is_an_error_observation(imap_server, monkeypatch):
+    from mcp_proton.domain.errors import ErrorCode, MailError
+
+    acct = _acct(imap_server)
+    store = open_store(acct)
+    try:
+        store.create_mailbox("Folders/x")
+        prober = probe.Prober(acct, store, log=lambda _: None, pace=0, all_mail_wait=0)
+        prober.folder = "Folders/x"
+        real = store.search
+
+        def search(mailbox, query):
+            if query.not_ is not None:
+                raise MailError(ErrorCode.INVALID_REQUEST, "IMAP server rejected search")
+            return real(mailbox, query)
+
+        monkeypatch.setattr(store, "search", search)
+        prober._run("search", "structured search translated to IMAP SEARCH",
+                    prober.probe_search)
+        [obs] = prober.report.observations
+        assert obs.outcome == "error"
+        err = obs.observed["error"]
+        assert err["code"] == "unsupported_semantics"
+        assert "nested" in err["message"] and "not" in err["message"]
+        assert err["details"]["cases"]["or"]["matches_expected"] is True
+    finally:
+        store.close()
+
