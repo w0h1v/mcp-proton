@@ -120,6 +120,33 @@ mcp-proton client-config hermes --client-id hermes
 
 The generated configuration uses an `mcp_servers` block with a `command`, `args` and an `env` entry for the client identifier. **Verify the exact schema against your installed Hermes version before use.** The generated text is marked as an example. This repository does not verify Hermes's negotiated protocol features, approval handling or timeout behaviour against a live Hermes install.
 
+## Letting an agent reply, and nothing else
+
+A common setup keeps an agent on the Reader preset but lets it answer mail with your approval. Open only the reply path; do not switch the account to Assistant or Autonomous.
+
+1. Keep the preset and set only the `send` family to Ask for that client and account:
+
+   ```sh
+   mcp-proton policy set send ask --client <agent> --account <account>
+   mcp-proton policy constraints set --client <agent> --allowed-accounts <account> \
+       --allowed-recipients <address-or-@domain> --max-sends-per-day <n>
+   mcp-proton policy show --client <agent> --json   # confirm: send = ask, everything else unchanged
+   ```
+
+2. In the MCP client's tool allow-list, add only `mail_reply`, `mail_reconcile`, `operations_status`, `operations_resume` and `operations_cancel`. Leave `mail_send`, `mail_forward` and `drafts_send` out unless you want them separately; enabling reply should never enable them as a side effect.
+3. Keep the client's review channel on `queue` (the default) for a stdio client. See [Elicitation review over stdio](#elicitation-review-over-stdio).
+
+The flow is then:
+
+1. The agent shows you the recipient, subject and exact body it intends to send.
+2. It calls `mail_reply`. Recipients and threading headers come from the original message and cannot be overridden. Pass `quote=false` for short replies so the original is not copied into the reply.
+3. The call returns `approval_pending` with an `operation_id`.
+4. You review and approve that exact request: `mcp-proton approvals show <operation_id>`, then `mcp-proton approvals approve <operation_id>`.
+5. The agent calls `operations_resume` with that `operation_id`. Any change to the content or recipients needs a new request and a new approval.
+6. If the result is `delivery_unknown`, do not resend. Check `operations_status` and `mail_reconcile`, and look in Sent. Not finding the message in Sent does not prove it was not delivered.
+
+**Policy only governs calls made through mcp-proton.** In a personal local deployment an agent that can run shell commands and read the Bridge password can send mail directly over SMTP and bypass all of this. If that must be impossible rather than merely against the rules, use the isolated service deployment above, so the agent never has access to the Bridge credentials.
+
 ## Local review UI
 
 The CLI includes a local owner review UI command:
