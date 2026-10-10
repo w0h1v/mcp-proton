@@ -295,6 +295,28 @@ def test_text_previews_read_only_the_text_part(store, monkeypatch):
     assert b"BODY.PEEK[" in wire and b"<0.200>" in wire and b"BODY.PEEK[]" not in wire
 
 
+def test_text_section_skips_text_attachments_named_only_by_content_type():
+    """A text attachment named only through Content-Type (no disposition) must not be
+    taken as the body: snippets would show attachment content."""
+    secret = (b"text", b"plain", (b"charset", b"utf-8", b"name", b"secret.txt"), None, None,
+              b"7bit", 10, 1, None, None, None, None)
+    body = (b"text", b"html", (b"charset", b"utf-8"), None, None, b"7bit", 10, 1, None, None,
+            None, None)
+    sec = imap_mod._text_section(([secret, body], b"mixed", None, None, None, None))
+    assert sec is not None and sec.section == "2" and sec.html
+    assert imap_mod._text_section(([secret], b"mixed", None, None, None, None)) is None
+
+
+def test_snippet_never_shows_an_attachment_named_by_content_type(store):
+    raw = (b"From: a@x.test\r\nTo: b@x.test\r\nSubject: s\r\nMIME-Version: 1.0\r\n"
+           b"Content-Type: multipart/mixed; boundary=B\r\n\r\n"
+           b"--B\r\nContent-Type: text/plain; charset=utf-8; name=\"secret.txt\"\r\n\r\n"
+           b"TOP SECRET ATTACHMENT\r\n--B--\r\n")
+    r = store.append("INBOX", raw)
+    out = store.fetch_text_previews("INBOX", r.uidvalidity, [r.uid])
+    assert "TOP SECRET" not in str(out)
+
+
 def test_attachment_filters_are_top_level_only():
     from pydantic import ValidationError
 

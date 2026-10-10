@@ -455,8 +455,11 @@ def _text_section(structure: Any) -> _TextSection | None:
         subtype = (_text(part[1]) or "").lower()
         if maintype != "text" or subtype not in ("plain", "html") or subtype in found:
             return
+        # Same rule as the body parser (mime._is_attachment, whose get_filename()
+        # falls back to the Content-Type name): a named text part is an attachment,
+        # and an attachment must never be shown as the body.
         disposition, filename = _disposition(part)
-        if disposition == "attachment" or filename:
+        if disposition == "attachment" or filename or _param(part[2], "name"):
             return
         found[subtype] = _TextSection(
             section=number or "1", encoding=(_text(part[5]) or "7bit").lower(),
