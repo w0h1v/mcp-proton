@@ -23,6 +23,9 @@ def test_probe_runs_and_cleans_up(imap_server, tmp_path):
     assert by["smtp_sent"].outcome == "skipped"
     assert by["flags"].outcome == "observed"
     assert by["label_copy_remove"].outcome == "observed"
+    search = by["search"].observed
+    assert set(search) == {"or", "not", "nested", "non_ascii_in_or"}
+    assert all(c["ok"] and c["matches_expected"] for c in search.values()), search
     path = tmp_path / "compatibility.json"
     n = probe.record_evidence(report, path, "test")
     data = json.loads(path.read_text())
@@ -301,3 +304,30 @@ def test_identity_compares_header_values_without_recording_them(imap_server, mon
     finally:
         prober.cleanup()
         store.close()
+
+
+def test_record_report_records_a_reviewed_report_without_running(tmp_path, monkeypatch,
+                                                                  capsys):
+    from mcp_proton.admin.cli import main
+
+    monkeypatch.setenv("MCP_PROTON_CONFIG_DIR", str(tmp_path / "cfg"))
+    report = probe.ProbeReport(
+        account="t", started_at="2026-10-10T00:00:00+00:00", bridge_id=None,
+        bridge_version="03.27.01", capabilities=["IMAP4REV1"], configuration={},
+        observations=[probe.Observation("flags", "read/unread", "observed", {"x": 1}),
+                      probe.Observation("smtp_sent", "compose", "skipped")])
+    src = tmp_path / "probe.json"
+    src.write_text(report.to_json())
+
+    assert main(["probe", "other", "--record-report", str(src)]) == 1
+    assert "not 'other'" in capsys.readouterr().err
+
+    assert main(["probe", "t", "--record-report", str(src), "--reviewed-by", "rev"]) == 0
+    data = json.loads((tmp_path / "cfg" / "compatibility.json").read_text())
+    [entry] = data["operations"]["read/unread"]["evidence"]
+    assert entry["reviewed_by"] == "rev" and entry["observed"] == {"x": 1}
+    assert "compose" not in data["operations"]  # skipped observations are not evidence
+
+    bad = tmp_path / "bad.json"
+    bad.write_text("{}")
+    assert main(["probe", "t", "--record-report", str(bad)]) == 1

@@ -29,8 +29,8 @@ from typing import Any
 
 from ..bridge.ports import MailStore, MailTransport
 from ..config import AccountConfig
-from ..domain.errors import MailError
-from ..domain.models import MailboxRole
+from ..domain.errors import ErrorCode, MailError
+from ..domain.models import MailboxRole, SearchQuery
 
 PROBE_PREFIX = "mcp-proton-probe"
 
@@ -284,6 +284,40 @@ class Prober:
         return {"appenduid_reported": res.uid is not None, "requested_internaldate":
                 old.isoformat(), "observed_internaldate": got.isoformat() if got else None}
 
+    def probe_search(self) -> dict[str, Any]:
+        """Boolean and non-ASCII searches in the probe folder, checked against the
+        messages it appended. Read-only apart from those appends."""
+        tag = secrets.token_hex(3)
+        names = {k: f"probe search {k} {tag}" for k in ("alpha", "beta", "gamma")}
+        names["gamma"] += " h\u00e9llo"
+        uids = {k: self._append(self.folder, v)[1] for k, v in names.items()}
+
+        def q(**kw: Any) -> SearchQuery:
+            return SearchQuery(**kw)
+
+        def subj(k: str) -> SearchQuery:
+            return q(subject=f"search {k} {tag}")
+
+        cases = {
+            "or": (q(any_of=[subj("alpha"), subj("beta")]), {"alpha", "beta"}),
+            "not": (q(subject=tag, not_=subj("alpha")), {"beta", "gamma"}),
+            "nested": (q(subject=tag, not_=q(any_of=[subj("alpha"), subj("beta")])),
+                       {"gamma"}),
+            "non_ascii_in_or": (q(any_of=[q(subject="h\u00e9llo"), subj("beta")]),
+                                {"beta", "gamma"}),
+        }
+        out: dict[str, Any] = {}
+        for name, (query, expect) in cases.items():
+            try:
+                _, found, _ = self.store.search(self.folder, query)
+            except MailError as e:
+                out[name] = {"ok": False, "error": e.to_dict()}
+                continue
+            got = {k for k, uid in uids.items() if uid in found}
+            out[name] = {"ok": True, "matches_expected": got == expect,
+                         "expected": sorted(expect), "matched": sorted(got)}
+        return out
+
     def probe_drafts(self) -> dict[str, Any]:
         drafts = self.store.mailbox_for_role(MailboxRole.DRAFTS)
         if not drafts:
@@ -374,6 +408,7 @@ class Prober:
                       self.probe_identity)
             self._run("import_internaldate", "EML and mbox import/export with manifests",
                       self.probe_import_internaldate)
+            self._run("search", "structured search: any_of, not, non-ASCII", self.probe_search)
             self._run("drafts", "create, read, update, discard, send", self.probe_drafts)
             self._run_skippable("smtp_sent", "compose, reply, reply-all, forward inline/attachment",
                                 self.probe_smtp_sent_copy)
@@ -454,6 +489,17 @@ def cleanup_leftovers(store: MailStore, *, delete: bool) -> dict[str, Any]:
     return {**found, "deleted": deleted, "failed": failed}
 
 
+def load_report(path: Path) -> ProbeReport:
+    """Read a report written by ``probe --out`` (for recording after review)."""
+    try:
+        data = json.loads(path.read_text())
+        obs = [Observation(**o) for o in data.pop("observations", [])]
+        return ProbeReport(**data, observations=obs)
+    except (OSError, ValueError, TypeError) as e:
+        raise MailError(ErrorCode.INVALID_REQUEST,
+                        f"not a probe report: {type(e).__name__}") from None
+
+
 # Probes whose observation is acceptance evidence for an inventory operation only
 # when the owner has reviewed it; --record stores it as such.
 def record_evidence(report: ProbeReport, path: Path, reviewed_by: str) -> int:
@@ -474,6 +520,7 @@ def record_evidence(report: ProbeReport, path: Path, reviewed_by: str) -> int:
             "observed": obs.observed, "reviewed_by": reviewed_by,
         })
         n += 1
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     path.write_text(json.dumps(data, indent=2, default=str))
     return n
 
