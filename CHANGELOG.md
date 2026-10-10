@@ -18,3 +18,8 @@ Not released. Implemented and tested against fake IMAP/SMTP servers only; not ye
 - Local owner review UI.
 - Optional local automation: scheduled sends, reminders, snooze, rules, webhooks, best-effort undo.
 - Optional metadata cache and full-text index, with saved searches and stats.
+
+### Changed after live Bridge testing
+- The IMAP adapter no longer names possibly-missing UIDs in `UID SEARCH`; Bridge answers `NO no such message` instead of an empty result.
+- The probe paces its steps (`--pace`), can stop at the first error (`--stop-on-error`), and can list and remove leftover probe mailboxes (`--cleanup`).
+- Probe labels end in `-label`: Proton rejects a label with the same name as a folder. A setup failure is recorded in the report and the probe exits 1.

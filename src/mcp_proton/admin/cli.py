@@ -714,6 +714,9 @@ class Cli:
             path = (self.dir or config_dir()) / "compatibility.json"
             n = probe.record_evidence(report, path, self.a.reviewed_by)
             print(f"Recorded {n} observation(s) in {path}")
+        if report.stopped_at:
+            print(f"error: probe stopped at {report.stopped_at}", file=sys.stderr)
+            return 1
         return 0
 
     def cmd_index_sync(self) -> int:
