@@ -14,6 +14,7 @@ version, date and configuration and must be rerun on Bridge updates.
 from __future__ import annotations
 
 import contextlib
+import email
 import json
 import platform
 import re
@@ -74,7 +75,8 @@ class Prober:
     def __init__(self, account: AccountConfig, store: MailStore,
                  transport: MailTransport | None = None, send_to: str | None = None,
                  sent_wait: float = 30.0, log: Callable[[str], None] = print,
-                 pace: float = 2.0, stop_on_error: bool = False) -> None:
+                 pace: float = 2.0, stop_on_error: bool = False,
+                 all_mail_wait: float = 30.0) -> None:
         self.account = account
         # Pause between probes so Bridge can apply each change before the next one.
         # An unpaced run against live Bridge triggered a sync error (UserBadEvent) that a
@@ -82,6 +84,10 @@ class Prober:
         self.pace = max(0.0, pace)
         self.stop_on_error = stop_on_error
         self.stopped_at: str | None = None
+        # Bridge fills All Mail some seconds after a change: a probe that reads it at
+        # once sees [] even for messages that exist. Poll up to this long instead.
+        self.all_mail_wait = max(0.0, all_mail_wait)
+        self._deleted: set[str] = set()
         self.store = store
         self.transport = transport
         self.send_to = send_to
@@ -118,10 +124,25 @@ class Prober:
     def _where(self, mid: str) -> dict[str, list[int] | None]:
         """Which probe-relevant mailboxes currently contain the Message-ID."""
         boxes = {"folder": self.folder, "folder2": self.folder2, "label": self.label}
+        boxes = {k: v for k, v in boxes.items() if v not in self._deleted}
         for role in (MailboxRole.TRASH, MailboxRole.ARCHIVE, MailboxRole.ALL_MAIL,
                      MailboxRole.INBOX, MailboxRole.SENT, MailboxRole.DRAFTS):
             boxes[role.value] = self.store.mailbox_for_role(role)  # type: ignore[assignment]
         return {k: self._uids_for(v, mid) for k, v in boxes.items() if v}
+
+    def _all_mail(self, mid: str) -> dict[str, Any]:
+        """Poll All Mail for the Message-ID; report where and when it appeared."""
+        box = self.store.mailbox_for_role(MailboxRole.ALL_MAIL)
+        if not box:
+            return {"all_mail": None}
+        t0 = time.time()
+        while True:
+            uids = self._uids_for(box, mid) or []
+            waited = round(time.time() - t0, 1)
+            if uids or waited >= self.all_mail_wait:
+                return {"all_mail": uids, "all_mail_waited_s": waited,
+                        "all_mail_wait_limit_s": self.all_mail_wait}
+            time.sleep(min(2.0, self.all_mail_wait))
 
     def _append(self, mailbox: str, subject: str, **kw: Any) -> tuple[int, int, str]:
         raw, mid = _raw(subject, self.account.address, self.account.address, **kw)
@@ -199,7 +220,10 @@ class Prober:
         self.store.store_flags(self.folder, uv, [uid], add=["\\Deleted"])
         gone = self.store.expunge_uids(self.folder, uv, [uid])
         time.sleep(2)
-        return {"expunged": gone, "after_expunge_in_folder": self._where(mid)}
+        # Absent from All Mail after the full wait, while the identity probe's control
+        # message appears within it, suggests the message was destroyed.
+        return {"expunged": gone, "after_expunge_in_folder": self._where(mid),
+                "all_mail_after_wait": self._all_mail(mid)}
 
     def probe_trash_and_destroy(self) -> dict[str, Any]:
         trash = self.store.mailbox_for_role(MailboxRole.TRASH)
@@ -219,7 +243,11 @@ class Prober:
         """Is there a stable Bridge-exposed identity across occurrences?"""
         uv, uid, mid = self._append(self.folder, "probe identity")
         self.store.copy(self.folder, uv, [uid], self.label)
+        # Control for the destroy checks: a message known to exist must show up in
+        # All Mail within the wait.
+        all_mail = self._all_mail(mid)
         headers: dict[str, list[str]] = {}
+        values: dict[str, dict[str, str]] = {}
         for box in (self.folder, self.label, self.store.mailbox_for_role(MailboxRole.ALL_MAIL)):
             if not box:
                 continue
@@ -227,10 +255,17 @@ class Prober:
             if not buids:
                 continue
             fm = self.store.fetch_message(box, buv, buids[0], header_only=True)
-            names = sorted({line.split(b":", 1)[0].decode(errors="replace")
-                            for line in fm.raw.split(b"\r\n") if b":" in line[:80]})
-            headers[box] = [n for n in names if n.lower().startswith(("x-pm", "x-proton"))]
-        return {"occurrences": self._where(mid), "proton_headers_by_mailbox": headers,
+            msg = email.message_from_bytes(fm.raw)
+            names = sorted({k for k in msg if k.lower().startswith(("x-pm", "x-proton"))})
+            headers[box] = names
+            values[box] = {n: str(msg.get(n, "")) for n in names}
+        # Whether each header has one value across occurrences (a stable identity).
+        # Only the comparison is recorded, never the identifiers themselves.
+        common = set.intersection(*(set(v) for v in values.values())) if values else set()
+        same = {n: len({v[n] for v in values.values()}) == 1 for n in sorted(common)}
+        return {"occurrences": self._where(mid), "all_mail_control": all_mail,
+                "proton_headers_by_mailbox": headers,
+                "same_value_across_mailboxes": same,
                 "server_capabilities_objectid": "OBJECTID" in
                 {c.upper() for c in self.report.capabilities}}
 
@@ -283,8 +318,10 @@ class Prober:
     def probe_folder_delete_effect(self) -> dict[str, Any]:
         uv, uid, mid = self._append(self.folder2, "probe folder delete")
         self.store.delete_mailbox(self.folder2)
+        self._deleted.add(self.folder2)
         time.sleep(2)
-        return {"after_deleting_non_empty_folder": self._where(mid)}
+        return {"after_deleting_non_empty_folder": self._where(mid),
+                "all_mail_after_wait": self._all_mail(mid)}
 
     def probe_idle(self) -> dict[str, Any]:
         if not self.store.has_capability("IDLE"):
@@ -360,6 +397,8 @@ class Prober:
         """Remove probe mailboxes; probe messages left in Trash/All Mail are tagged by
         their Message-ID domain ``mcp-proton-probe.invalid``."""
         for box in reversed(self.report.created_mailboxes):
+            if box in self._deleted:
+                continue
             with contextlib.suppress(MailError):
                 self.store.delete_mailbox(box)
 

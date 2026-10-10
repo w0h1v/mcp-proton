@@ -14,7 +14,7 @@ def test_probe_runs_and_cleans_up(imap_server, tmp_path):
                          imap_port=imap_server.port, imap_security=Security.NONE)
     store = open_store(acct)
     try:
-        report = probe.Prober(acct, store, log=lambda _: None, pace=0).run()
+        report = probe.Prober(acct, store, log=lambda _: None, pace=0, all_mail_wait=0).run()
         names = {m.name for m in store.list_mailboxes()}
     finally:
         store.close()
@@ -135,7 +135,7 @@ def test_probe_mailbox_leaf_names_are_globally_unique(imap_server):
     acct = _acct(imap_server)
     store = open_store(acct)
     try:
-        prober = probe.Prober(acct, store, log=lambda _: None, pace=0)
+        prober = probe.Prober(acct, store, log=lambda _: None, pace=0, all_mail_wait=0)
         leaves = [b.rsplit("/", 1)[-1] for b in (prober.folder, prober.folder2, prober.label)]
         assert len(set(leaves)) == 3
         assert all(probe.PROBE_NAME_RE.fullmatch(leaf) for leaf in leaves)
@@ -207,3 +207,71 @@ def test_cli_writes_report_and_exits_nonzero_when_setup_fails(imap_server, tmp_p
     assert "stopped at setup" in capsys.readouterr().err
     data = json.loads(out.read_text())
     assert data["stopped_at"] == "setup" and len(data["created_mailboxes"]) == 2
+
+
+def test_each_probe_mailbox_is_deleted_once_and_not_inspected_after(imap_server):
+    acct = _acct(imap_server)
+    store = open_store(acct)
+    deleted: list[str] = []
+    real_delete = store.delete_mailbox
+
+    def delete(name):
+        deleted.append(name)
+        return real_delete(name)
+
+    try:
+        store.delete_mailbox = delete
+        prober = probe.Prober(acct, store, log=lambda _: None, pace=0, all_mail_wait=0)
+        report = prober.run()
+        assert report.stopped_at is None
+        assert sorted(deleted) == sorted(report.created_mailboxes)  # folder2 not twice
+        by = {o.probe: o for o in report.observations}
+        assert "folder2" not in by["folder_delete"].observed["after_deleting_non_empty_folder"]
+    finally:
+        store.close()
+
+
+def test_all_mail_is_polled_until_the_message_appears(imap_server, monkeypatch):
+    acct = _acct(imap_server)
+    store = open_store(acct)
+    try:
+        prober = probe.Prober(acct, store, log=lambda _: None, pace=0, all_mail_wait=10)
+        monkeypatch.setattr(store, "mailbox_for_role", lambda role: "All Mail")
+        answers = iter([[], [], [7]])
+        monkeypatch.setattr(prober, "_uids_for", lambda box, mid: next(answers))
+        monkeypatch.setattr(probe.time, "sleep", lambda s: None)
+        got = prober._all_mail("<x@mcp-proton-probe.invalid>")
+        assert got["all_mail"] == [7] and got["all_mail_wait_limit_s"] == 10
+
+        prober.all_mail_wait = 0
+        monkeypatch.setattr(prober, "_uids_for", lambda box, mid: [])
+        assert prober._all_mail("<y@mcp-proton-probe.invalid>")["all_mail"] == []
+    finally:
+        store.close()
+
+
+def test_identity_compares_header_values_without_recording_them(imap_server, monkeypatch):
+    from mcp_proton.bridge.ports import FetchedMessage
+
+    acct = _acct(imap_server)
+    store = open_store(acct)
+    try:
+        prober = probe.Prober(acct, store, log=lambda _: None, pace=0, all_mail_wait=0)
+        store.create_mailbox(prober.folder)
+        store.create_mailbox(prober.label)
+        real_fetch = store.fetch_message
+        per_box = {prober.folder: b"X-Pm-Internal-Id: SAME\r\nX-Pm-Gluon-Id: g1\r\n",
+                   prober.label: b"X-Pm-Internal-Id: SAME\r\nX-Pm-Gluon-Id: g2\r\n"}
+
+        def fetch(box, uv, uid, header_only=False):
+            fm = real_fetch(box, uv, uid, header_only=header_only)
+            return FetchedMessage(**{**fm.__dict__, "raw": per_box[box] + fm.raw})
+
+        monkeypatch.setattr(store, "fetch_message", fetch)
+        out = prober.probe_identity()
+        assert out["same_value_across_mailboxes"] == {"X-Pm-Gluon-Id": False,
+                                                      "X-Pm-Internal-Id": True}
+        assert "SAME" not in json.dumps(out) and "g1" not in json.dumps(out)
+    finally:
+        prober.cleanup()
+        store.close()

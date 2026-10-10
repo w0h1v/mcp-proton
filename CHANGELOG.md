@@ -23,3 +23,4 @@ Not released. Implemented and tested against fake IMAP/SMTP servers only; not ye
 - The IMAP adapter no longer names possibly-missing UIDs in `UID SEARCH`; Bridge answers `NO no such message` instead of an empty result.
 - The probe paces its steps (`--pace`), can stop at the first error (`--stop-on-error`), and can list and remove leftover probe mailboxes (`--cleanup`).
 - Probe labels end in `-label`: Proton rejects a label with the same name as a folder. A setup failure is recorded in the report and the probe exits 1.
+- The probe polls All Mail, which Bridge fills late, before reading a missing message as destroyed (`--all-mail-wait`), records whether Proton's `X-Pm-*` identity headers match across a message's occurrences, and no longer inspects or deletes a folder it already deleted.

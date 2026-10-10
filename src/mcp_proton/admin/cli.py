@@ -185,6 +185,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--reviewed-by", default="owner")
     p.add_argument("--pace", type=float, default=2.0, metavar="SECONDS",
                    help="pause between probes so Bridge can apply each change (default 2)")
+    p.add_argument("--all-mail-wait", type=float, default=30.0, metavar="SECONDS",
+                   help="how long to poll All Mail, which Bridge fills late (default 30)")
     p.add_argument("--stop-on-error", action="store_true",
                    help="stop at the first failed probe and leave its state for diagnosis")
     p.add_argument("--cleanup", action="store_true",
@@ -700,7 +702,8 @@ class Cli:
         try:
             prober = probe.Prober(acct, store, open_transport(acct) if self.a.send_to else None,
                                   send_to=self.a.send_to, pace=self.a.pace,
-                                  stop_on_error=self.a.stop_on_error)
+                                  stop_on_error=self.a.stop_on_error,
+                                  all_mail_wait=self.a.all_mail_wait)
             report = prober.run()
         finally:
             store.close()
