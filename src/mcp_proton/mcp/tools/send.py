@@ -57,12 +57,15 @@ def build(gw: Gateway) -> LocalProvider:
 
     @gw.tool(p, "mail_reply",
              "Reply (or reply-all) to a message; recipients and threading headers come from "
-             "the original, and your own addresses are never recipients." + SEND_NOTE,
+             "the original and cannot be overridden, and your own addresses are never "
+             "recipients. quote defaults to true, which copies the original message into the "
+             "reply; pass quote=false for short replies." + SEND_NOTE,
              access=Access.SEND, title="Reply")
     async def mail_reply(
         ctx: Context, handle: HandleParam, text: str | None = None, html: str | None = None,
         reply_all: bool = False, quote: Annotated[bool, Field(
-            description="Append the quoted original to the text body.")] = True,
+            description="Append the quoted original to the text body (default true). Use "
+                        "false to avoid copying the original message into the reply.")] = True,
         attachments: AttachmentItems | None = None,
         idempotency_key: IdempotencyParam = None,
     ) -> WriteResult:
