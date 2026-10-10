@@ -131,13 +131,14 @@ class Prober:
         return {k: self._uids_for(v, mid) for k, v in boxes.items() if v}
 
     def _all_mail(self, mid: str) -> dict[str, Any]:
-        """Poll All Mail for the Message-ID; report where and when it appeared."""
+        """Poll All Mail for the Message-ID; report where and when it appeared.
+        Search errors propagate: an error must never be recorded as absence."""
         box = self.store.mailbox_for_role(MailboxRole.ALL_MAIL)
         if not box:
             return {"all_mail": None}
         t0 = time.time()
         while True:
-            uids = self._uids_for(box, mid) or []
+            uids = self.store.find_by_message_id(box, mid)[1]
             waited = round(time.time() - t0, 1)
             if uids or waited >= self.all_mail_wait:
                 return {"all_mail": uids, "all_mail_waited_s": waited,
@@ -261,10 +262,14 @@ class Prober:
             values[box] = {n: str(msg.get(n, "")) for n in names}
         # Whether each header has one value across occurrences (a stable identity).
         # Only the comparison is recorded, never the identifiers themselves.
-        common = set.intersection(*(set(v) for v in values.values())) if values else set()
-        same = {n: len({v[n] for v in values.values()}) == 1 for n in sorted(common)}
+        # With fewer than two occurrences nothing was compared, so report no result.
+        same: dict[str, bool] | None = None
+        if len(values) >= 2:
+            common = set.intersection(*(set(v) for v in values.values()))
+            same = {n: len({v[n] for v in values.values()}) == 1 for n in sorted(common)}
         return {"occurrences": self._where(mid), "all_mail_control": all_mail,
                 "proton_headers_by_mailbox": headers,
+                "occurrences_compared": len(values),
                 "same_value_across_mailboxes": same,
                 "server_capabilities_objectid": "OBJECTID" in
                 {c.upper() for c in self.report.capabilities}}

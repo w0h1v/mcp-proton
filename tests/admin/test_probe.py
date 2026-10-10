@@ -238,14 +238,34 @@ def test_all_mail_is_polled_until_the_message_appears(imap_server, monkeypatch):
         prober = probe.Prober(acct, store, log=lambda _: None, pace=0, all_mail_wait=10)
         monkeypatch.setattr(store, "mailbox_for_role", lambda role: "All Mail")
         answers = iter([[], [], [7]])
-        monkeypatch.setattr(prober, "_uids_for", lambda box, mid: next(answers))
+        monkeypatch.setattr(store, "find_by_message_id", lambda box, mid: (1, next(answers)))
         monkeypatch.setattr(probe.time, "sleep", lambda s: None)
         got = prober._all_mail("<x@mcp-proton-probe.invalid>")
         assert got["all_mail"] == [7] and got["all_mail_wait_limit_s"] == 10
 
         prober.all_mail_wait = 0
-        monkeypatch.setattr(prober, "_uids_for", lambda box, mid: [])
+        monkeypatch.setattr(store, "find_by_message_id", lambda box, mid: (1, []))
         assert prober._all_mail("<y@mcp-proton-probe.invalid>")["all_mail"] == []
+    finally:
+        store.close()
+
+
+def test_all_mail_search_error_is_an_error_not_absence(imap_server, monkeypatch):
+    from mcp_proton.domain.errors import ErrorCode, MailError
+
+    acct = _acct(imap_server)
+    store = open_store(acct)
+    try:
+        prober = probe.Prober(acct, store, log=lambda _: None, pace=0, all_mail_wait=0)
+        monkeypatch.setattr(store, "mailbox_for_role", lambda role: "All Mail")
+
+        def fail(box, mid):
+            raise MailError(ErrorCode.BRIDGE_UNAVAILABLE, "search failed")
+
+        monkeypatch.setattr(store, "find_by_message_id", fail)
+        prober._run("probe", "op", lambda: prober._all_mail("<z@mcp-proton-probe.invalid>"))
+        [obs] = prober.report.observations
+        assert obs.outcome == "error" and "all_mail" not in obs.observed
     finally:
         store.close()
 
@@ -272,6 +292,12 @@ def test_identity_compares_header_values_without_recording_them(imap_server, mon
         assert out["same_value_across_mailboxes"] == {"X-Pm-Gluon-Id": False,
                                                       "X-Pm-Internal-Id": True}
         assert "SAME" not in json.dumps(out) and "g1" not in json.dumps(out)
+
+        # a single occurrence proves nothing: no comparison is reported
+        monkeypatch.setattr(store, "copy", lambda *a, **k: None)
+        single = prober.probe_identity()
+        assert single["occurrences_compared"] == 1
+        assert single["same_value_across_mailboxes"] is None
     finally:
         prober.cleanup()
         store.close()
