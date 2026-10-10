@@ -1,8 +1,8 @@
 """Phase 0 compatibility probe: observe real Bridge semantics and record evidence.
 
 Owner-only. Runs against a **dedicated test account** and creates its own
-``Folders/mcp-proton-probe-*`` and ``Labels/mcp-proton-probe-*`` mailboxes with
-synthetic messages, then removes them. It never touches existing messages.
+``Folders/mcp-proton-probe-*`` and ``Labels/mcp-proton-probe-*-label`` mailboxes
+with synthetic messages, then removes them. It never touches existing messages.
 
 Each probe records what was *observed*; it does not assert what Bridge should
 do. The owner reviews the JSON report and, with ``--record``, merges entries
@@ -52,6 +52,8 @@ class ProbeReport:
     capabilities: list[str]
     configuration: dict[str, Any]
     observations: list[Observation] = field(default_factory=list)
+    created_mailboxes: list[str] = field(default_factory=list)
+    stopped_at: str | None = None
     finished_at: str | None = None
 
     def to_json(self) -> str:
@@ -90,7 +92,9 @@ class Prober:
         delim = caps.delimiter or "/"
         self.folder = f"Folders{delim}{PROBE_PREFIX}-{tag}"
         self.folder2 = f"Folders{delim}{PROBE_PREFIX}-{tag}-b"
-        self.label = f"Labels{delim}{PROBE_PREFIX}-{tag}"
+        # Proton names folders and labels in one namespace: a label may not share a
+        # folder's name, so each probe mailbox needs a distinct leaf name.
+        self.label = f"Labels{delim}{PROBE_PREFIX}-{tag}-label"
         sid = caps.server_id or {}
         self.report = ProbeReport(
             account=account.name, started_at=datetime.now(UTC).isoformat(),
@@ -290,11 +294,27 @@ class Prober:
         return {"idle": True, "returned_after_s": round(time.time() - t0, 2)}
 
     # ---------------------------------------------------------------- run
+    def _setup(self) -> bool:
+        """Create the probe mailboxes, recording each one that exists afterwards.
+        A failure is recorded as the ``setup`` observation instead of escaping, so
+        the report is still produced and lists what was created."""
+        for box in (self.folder, self.folder2, self.label):
+            try:
+                self.store.create_mailbox(box)
+            except Exception as e:  # noqa: BLE001 - recorded in the report
+                detail = e.to_dict() if isinstance(e, MailError) else type(e).__name__
+                self.report.observations.append(Observation(
+                    "setup", "create probe mailboxes", "error",
+                    {"mailbox": box, "error": detail}))
+                self.stopped_at = "setup"
+                return False
+            self.report.created_mailboxes.append(box)
+        return True
+
     def run(self) -> ProbeReport:
-        self.store.create_mailbox(self.folder)
-        self.store.create_mailbox(self.folder2)
-        self.store.create_mailbox(self.label)
         try:
+            if not self._setup():
+                return self.report
             self._run("mailboxes", "list hierarchy, special folders, counts", self.probe_mailboxes)
             self._run("flags", "read/unread, star/unstar, other permanent flags",
                       self.probe_flags)
@@ -319,14 +339,15 @@ class Prober:
                       self.probe_folder_delete_effect)
             self._run("idle", "new mail, flags, memberships, deletions", self.probe_idle)
         finally:
-            if self.stopped_at is None:
+            self.report.stopped_at = self.stopped_at
+            if self.stopped_at is None or not self.stop_on_error:
                 self.cleanup()
             else:
                 # Leave the state as it was at the failure for diagnosis.
                 self.log(f"stopped after an error in {self.stopped_at}; probe mailboxes were "
                          "left in place. Remove them with: mcp-proton probe <account> "
                          "--cleanup --yes-dedicated-test-account")
-        self.report.finished_at = datetime.now(UTC).isoformat()
+            self.report.finished_at = datetime.now(UTC).isoformat()
         return self.report
 
     def _run_skippable(self, probe: str, operation: str, fn: Callable[[], dict[str, Any]]) -> None:
@@ -338,7 +359,7 @@ class Prober:
     def cleanup(self) -> None:
         """Remove probe mailboxes; probe messages left in Trash/All Mail are tagged by
         their Message-ID domain ``mcp-proton-probe.invalid``."""
-        for box in (self.label, self.folder2, self.folder):
+        for box in reversed(self.report.created_mailboxes):
             with contextlib.suppress(MailError):
                 self.store.delete_mailbox(box)
 
@@ -348,9 +369,10 @@ class _Skip(Exception):  # noqa: N818
 
 
 PROBE_MESSAGE_DOMAIN = f"{PROBE_PREFIX}.invalid"
-# Exactly the names Prober creates: "<prefix>-<UTC %Y%m%d%H%M%S>" and the "-b" second folder.
-# Cleanup deletes only these, never a mailbox that merely starts with the prefix.
-PROBE_NAME_RE = re.compile(rf"{re.escape(PROBE_PREFIX)}-\d{{14}}(-b)?")
+# Exactly the names Prober creates: "<prefix>-<UTC %Y%m%d%H%M%S>", the "-b" second folder
+# and the "-label" label. Earlier versions named the label without a suffix, which still
+# matches. Cleanup deletes only these, never a mailbox that merely starts with the prefix.
+PROBE_NAME_RE = re.compile(rf"{re.escape(PROBE_PREFIX)}-\d{{14}}(-b|-label)?")
 
 
 def find_leftovers(store: MailStore) -> dict[str, Any]:

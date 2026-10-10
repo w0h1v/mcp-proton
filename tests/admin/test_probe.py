@@ -93,10 +93,12 @@ def test_cleanup_only_matches_generated_probe_names(imap_server):
     store = open_store(acct)
     try:
         lookalikes = ["Folders/mcp-proton-probe", "Folders/mcp-proton-probearchive",
-                      "Labels/mcp-proton-probe-notes", "Folders/mcp-proton-probe-2026"]
+                      "Labels/mcp-proton-probe-notes", "Folders/mcp-proton-probe-2026",
+                      "Labels/mcp-proton-probe-20261009182500-labels"]
         generated = ["Folders/mcp-proton-probe-20261009182500",
                      "Folders/mcp-proton-probe-20261009182500-b",
-                     "Labels/mcp-proton-probe-20261009182500"]
+                     "Labels/mcp-proton-probe-20261009182500-label",
+                     "Labels/mcp-proton-probe-20261009182400"]  # pre-suffix label name
         for name in lookalikes + generated:
             store.create_mailbox(name)
         result = probe.cleanup_leftovers(store, delete=True)
@@ -105,3 +107,103 @@ def test_cleanup_only_matches_generated_probe_names(imap_server):
         assert set(lookalikes) <= names
     finally:
         store.close()
+
+
+class _ProtonNamespace:
+    """Wraps a store so CREATE behaves like Proton: folders and labels share one
+    namespace, so a leaf name already used by either is rejected."""
+
+    def __init__(self, store, fail_on=None):
+        self._store = store
+        self._fail_on = fail_on
+
+    def __getattr__(self, name):
+        return getattr(self._store, name)
+
+    def create_mailbox(self, name):
+        from mcp_proton.domain.errors import ErrorCode, MailError
+
+        leaf = name.rsplit("/", 1)[-1]
+        taken = {m.name.rsplit("/", 1)[-1] for m in self._store.list_mailboxes()
+                 if m.name.startswith(("Folders/", "Labels/"))}
+        if leaf in taken or (self._fail_on and self._fail_on in name):
+            raise MailError(ErrorCode.CONFLICT, "create mailbox: mailbox already exists")
+        return self._store.create_mailbox(name)
+
+
+def test_probe_mailbox_leaf_names_are_globally_unique(imap_server):
+    acct = _acct(imap_server)
+    store = open_store(acct)
+    try:
+        prober = probe.Prober(acct, store, log=lambda _: None, pace=0)
+        leaves = [b.rsplit("/", 1)[-1] for b in (prober.folder, prober.folder2, prober.label)]
+        assert len(set(leaves)) == 3
+        assert all(probe.PROBE_NAME_RE.fullmatch(leaf) for leaf in leaves)
+
+        prober.store = _ProtonNamespace(store)
+        report = prober.run()
+        assert report.stopped_at is None
+        assert [o.probe for o in report.observations][0] == "mailboxes"
+        assert len(report.created_mailboxes) == 3
+        assert not any(probe.PROBE_PREFIX in m.name for m in store.list_mailboxes())
+    finally:
+        store.close()
+
+
+def test_setup_failure_is_reported_and_created_mailboxes_listed(imap_server):
+    acct = _acct(imap_server)
+    store = open_store(acct)
+    try:
+        prober = probe.Prober(acct, _ProtonNamespace(store, fail_on="-label"),
+                              log=lambda _: None, pace=0, stop_on_error=True)
+        report = prober.run()
+        assert report.stopped_at == "setup" and report.finished_at
+        [obs] = report.observations
+        assert obs.probe == "setup" and obs.outcome == "error"
+        assert obs.observed["mailbox"] == prober.label
+        assert obs.observed["error"]["code"] == "conflict"
+        assert report.created_mailboxes == [prober.folder, prober.folder2]
+        assert '"stopped_at": "setup"' in report.to_json()
+
+        # stop-on-error keeps them for diagnosis; explicit cleanup finds and removes them
+        assert probe.find_leftovers(store)["mailboxes"] == sorted(report.created_mailboxes)
+        done = probe.cleanup_leftovers(store, delete=True)
+        assert sorted(done["deleted"]) == sorted(report.created_mailboxes)
+    finally:
+        store.close()
+
+
+def test_setup_failure_without_stop_on_error_removes_what_it_created(imap_server):
+    acct = _acct(imap_server)
+    store = open_store(acct)
+    try:
+        report = probe.Prober(acct, _ProtonNamespace(store, fail_on="-label"),
+                              log=lambda _: None, pace=0).run()
+        assert report.stopped_at == "setup"
+        assert len(report.created_mailboxes) == 2
+        assert probe.find_leftovers(store)["mailboxes"] == []
+    finally:
+        store.close()
+
+
+def test_cli_writes_report_and_exits_nonzero_when_setup_fails(imap_server, tmp_path,
+                                                             monkeypatch, capsys):
+    from mcp_proton.admin import cli
+
+    acct = _acct(imap_server)
+
+    class _Cfg:
+        def account(self, _name):
+            return acct
+
+    monkeypatch.setattr(cli, "load_service_config", lambda _d: _Cfg())
+    real_open = open_store
+    monkeypatch.setattr("mcp_proton.bridge.imap.open_store",
+                        lambda a: _ProtonNamespace(real_open(a), fail_on="-label"))
+    out = tmp_path / "probe.json"
+    rc = cli.main(["probe", "t", "--yes-dedicated-test-account", "--pace", "0",
+                   "--out", str(out)])
+    assert rc == 1
+    assert "stopped at setup" in capsys.readouterr().err
+    data = json.loads(out.read_text())
+    assert data["stopped_at"] == "setup" and len(data["created_mailboxes"]) == 2

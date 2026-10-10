@@ -36,7 +36,7 @@ Two rows differ from the usual `implemented, unverified` status. The extended-pr
 
 ## Recording evidence
 
-Evidence comes from a live probe against a **dedicated test account**. The probe creates and deletes its own `Folders/mcp-proton-probe-*` and `Labels/mcp-proton-probe-*` mailboxes and synthetic messages. It does not touch existing messages.
+Evidence comes from a live probe against a **dedicated test account**. The probe creates and deletes its own `Folders/mcp-proton-probe-*` and `Labels/mcp-proton-probe-*-label` mailboxes and synthetic messages. It does not touch existing messages.
 
 1. Run the probe and write the report to a file. The command requires an explicit confirmation flag:
 
@@ -90,6 +90,7 @@ Findings from live runs. They are not evidence records (those come from `mcp-pro
 | Date | Observation | Consequence |
 |---|---|---|
 | 2026-10-09 | After a successful `UID EXPUNGE 1` in a label mailbox, `UID SEARCH UID 1` returned `NO ... no such message` instead of an empty result (RFC 3501). Expunge in the label mailbox removed the label (Proton API returned 200). | The adapter never names possibly-missing UIDs in a search; it lists `UID SEARCH ALL` and intersects. Reads retry once with present UIDs when Bridge rejects a missing one. "no such message" is reported as a missing message, not a missing mailbox. |
+| 2026-10-10 | Bridge 03.27.01 rejected creating a label whose name matched an existing folder: HTTP 409, code 2500, "Label or folder with this name already exists". The IMAP `CREATE` failed with a conflict. Folders and labels share one name namespace. | Probe labels end in `-label`, so every probe mailbox has a distinct name. A setup failure is now recorded in the report (`stopped_at: setup`, `created_mailboxes`) and the probe exits 1 instead of aborting without a report. |
 | 2026-10-09 | An unpaced full probe run was followed by a Bridge sync error (UserBadEvent). A paced rerun (stop on first error) did not reproduce it. Cause not established. | The probe pauses between steps by default (`--pace`, 2 s) and supports `--stop-on-error`. |
 
 ## Rerunning tests
