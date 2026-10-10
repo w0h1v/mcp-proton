@@ -262,3 +262,21 @@ async def test_prompts_warn_about_untrusted_content(app, prompt):
         res = await c.get_prompt(prompt, args)
     text = res.messages[0].content.text
     assert "untrusted" in text and "prompt injection" in text
+
+
+async def test_account_wide_search_groups_occurrences(app, seed):
+    [h] = seed(subject="Grouped needle")
+    store = app.store(ACCOUNT)
+    from mcp_proton.domain.models import MessageHandle
+
+    parsed = MessageHandle.parse(h)
+    store.copy("INBOX", parsed.uidvalidity, [parsed.uid], "Archive")
+    async with client_for(app) as c:
+        res = await call(c, "messages_search", {
+            "account": ACCOUNT, "query": {"subject": "Grouped needle"}, "account_wide": True})
+        [item] = res["items"]
+        assert sorted(o["mailbox"] for o in item["occurrences"]) == ["Archive", "INBOX"]
+        assert "provider_id" not in item
+        bad = await call(c, "messages_search", {
+            "account": ACCOUNT, "query": {}, "mailboxes": ["INBOX"], "account_wide": True})
+        assert bad["error"]["code"] == "invalid_request"

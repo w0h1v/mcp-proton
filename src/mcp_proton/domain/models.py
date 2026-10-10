@@ -144,6 +144,14 @@ class AttachmentInfo(Model):
     inline: bool = False
 
 
+class Occurrence(Model):
+    """One mailbox in which a logical message appears (a folder, a label, All Mail)."""
+
+    mailbox: str
+    role: str | None = None
+    handle: str
+
+
 class MessageSummary(Model):
     handle: str  # opaque MessageHandle token
     mailbox: str
@@ -158,6 +166,11 @@ class MessageSummary(Model):
     size: int | None = None
     flags: list[str] = Field(default_factory=list)
     has_attachments: bool | None = None
+    # Proton's message ID (X-Pm-Internal-Id) when Bridge provides it; used to group
+    # occurrences of one message across mailboxes. Not part of the tool output.
+    provider_id: str | None = Field(default=None, exclude=True)
+    # Set by multi-mailbox searches: every mailbox this message was found in.
+    occurrences: list[Occurrence] | None = None
 
 
 class MessageBody(Model):

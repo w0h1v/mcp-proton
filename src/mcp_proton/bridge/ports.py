@@ -56,6 +56,17 @@ class FetchedMessage:
 
 
 @dataclass
+class MessageIdentity:
+    """What grouping one message's occurrences needs, without the envelope."""
+
+    mailbox: str
+    uid: int
+    internal_date: datetime | None
+    provider_id: str | None  # X-Pm-Internal-Id
+    message_id: str | None
+
+
+@dataclass
 class AppendResult:
     mailbox: str
     uidvalidity: int | None
@@ -86,6 +97,8 @@ class MailStore(Protocol):
     def search(self, mailbox: str, query: SearchQuery) -> tuple[int, list[int], list[str]]: ...
     def fetch_summaries(self, mailbox: str, uidvalidity: int, uids: list[int]
                         ) -> list[MessageSummary]: ...
+    def fetch_identities(self, mailbox: str, uidvalidity: int, uids: list[int]
+                         ) -> list[MessageIdentity]: ...
     def fetch_message(self, mailbox: str, uidvalidity: int, uid: int,
                       header_only: bool = False) -> FetchedMessage: ...
     def fetch_flags(self, mailbox: str, uidvalidity: int, uids: list[int]
