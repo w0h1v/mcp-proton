@@ -37,7 +37,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from email.header import decode_header, make_header
+from email.message import Message
 from email.parser import BytesHeaderParser
+from email.utils import collapse_rfc2231_value, decode_params, unquote
 from typing import Any
 
 from imapclient import IMAPClient
@@ -158,6 +160,9 @@ def search_notes(query: SearchQuery) -> list[str]:
         notes.append("SINCE/BEFORE use day granularity (time of day is ignored by IMAP).")
     if any(q.body or q.text for q in found):
         notes.append("Body/text search depends on Bridge's local index and may be incomplete.")
+    if query.has_attachment_filter():
+        notes.append("Attachment filters were applied after the IMAP search from each "
+                     "message's MIME structure; attachment contents are not searched.")
     if any(_has_non_ascii(build_search_criteria(q)) for q in found):
         notes.append("Non-ASCII criteria were sent with CHARSET UTF-8; server support is "
                      "unverified.")
@@ -322,6 +327,102 @@ def _flags(raw: Any) -> list[str]:
     return [n for n in names if n.lower() != "\\recent"]  # \\Recent is per-session noise
 
 
+# Attachment filters read each match's BODYSTRUCTURE; past this many matches in one
+# mailbox the caller must narrow the search.
+ATTACHMENT_FILTER_MAX = 5000
+
+
+def _param(params: Any, name: str) -> str | None:
+    """A MIME parameter from a BODYSTRUCTURE (k, v, k, v, ...) tuple, decoded: RFC 2231
+    (including continuations such as filename*0*, filename*1*) and RFC 2047."""
+    if not isinstance(params, (tuple, list)):
+        return None
+    pairs = [((_text(k) or "").lower(), _text(v) or "")
+             for k, v in zip(params[::2], params[1::2], strict=False)]
+    # decode_params keeps the first pair as the content type, so lead with a dummy.
+    for key, value in decode_params([("x", ""), *pairs])[1:]:
+        if key.lower() != name:
+            continue
+        text = unquote(collapse_rfc2231_value(value))  # decode_params adds quotes
+        try:
+            return str(make_header(decode_header(text))) or None  # RFC 2047
+        except (ValueError, LookupError):
+            return text or None
+    return None
+
+
+def _attachment_parts(part: Any) -> list[tuple[str, str | None]]:
+    """(MIME type, filename) of each attachment leaf, by the rule the attachment tools
+    use (bridge.mime._is_attachment): an attached message, an attachment disposition,
+    a filename, or any leaf other than text/plain and text/html."""
+    if isinstance(part[0], list):
+        return [p for child in part[0] for p in _attachment_parts(child)]
+    mime_type = f"{(_text(part[0]) or '').lower()}/{(_text(part[1]) or '').lower()}"
+    disposition, filename = _disposition(part)
+    name = filename or _param(part[2], "name")
+    if (mime_type.startswith("message/") or disposition == "attachment" or name
+            or mime_type not in ("text/plain", "text/html")):
+        return [(mime_type, name)]
+    return []
+
+
+def _disposition_index(part: Any) -> int:
+    """Where a leaf BODYSTRUCTURE carries its disposition (RFC 3501 body-ext-1part):
+    after the basic fields, plus the line count for text parts, plus the envelope,
+    body and line count for message/rfc822."""
+    maintype = (_text(part[0]) or "").lower()
+    subtype = (_text(part[1]) or "").lower()
+    if maintype == "text":
+        return 9
+    if maintype == "message" and subtype == "rfc822":
+        return 11
+    return 8
+
+
+def _disposition(part: Any) -> tuple[str | None, str | None]:
+    """(disposition, filename) of a leaf part. RFC 3501 sends the disposition as
+    ("attachment" ("filename" "x.pdf")); some servers send the raw header value
+    instead (b'attachment; filename="x.pdf"'), so both are read."""
+    idx = _disposition_index(part)
+    item = part[idx] if len(part) > idx else None
+    if isinstance(item, tuple) and item and isinstance(item[0], bytes):
+        kind = item[0].decode("ascii", "replace").lower()
+        return kind, _param(item[1] if len(item) > 1 else None, "filename")
+    if isinstance(item, bytes) and item.lower().startswith((b"attachment", b"inline")):
+        header = Message()
+        header["Content-Disposition"] = item.decode("utf-8", "replace")
+        filename = header.get_filename()
+        if filename:
+            with contextlib.suppress(ValueError, LookupError):
+                filename = str(make_header(decode_header(filename)))
+        return header.get_content_disposition(), filename
+    return None, None
+
+
+def _attachments_match(structure: Any, query: SearchQuery) -> bool:
+    """Whether a message's BODYSTRUCTURE satisfies the query's attachment filters.
+    An unrecognised structure matches nothing (it is never assumed either way)."""
+    if structure is None:
+        return False
+    try:
+        parts = _attachment_parts(structure)
+        has = _has_attachments(structure)
+    except (TypeError, ValueError, IndexError, AttributeError):
+        return False
+    if query.has_attachment is not None and (has is None or has != query.has_attachment):
+        return False
+    if query.attachment_name is not None:
+        needle = query.attachment_name.casefold()
+        if not any(n and needle in n.casefold() for _, n in parts):
+            return False
+    if query.attachment_type is not None:
+        want = query.attachment_type.lower()
+        if not any(t == want or (want.endswith("/") and t.startswith(want))
+                   for t, _ in parts):
+            return False
+    return True
+
+
 def _has_attachments(structure: Any) -> bool | None:
     """Best effort from BODYSTRUCTURE; None when the structure is unrecognised."""
     try:
@@ -336,11 +437,8 @@ def _walk_structure(part: Any, parent_subtype: str, first_text: list[bool]) -> b
         return any(_walk_structure(child, subtype, first_text) for child in part[0])
     maintype = (_text(part[0]) or "").lower()
     subtype = (_text(part[1]) or "").lower()
-    for item in part[7:]:
-        if isinstance(item, tuple) and item and isinstance(item[0], bytes):
-            disposition = item[0].decode("ascii", "replace").lower()
-            if disposition == "attachment":
-                return True
+    if _disposition(part)[0] == "attachment":
+        return True
     if maintype == "message" and subtype == "rfc822":
         return True
     if maintype == "text" and subtype in ("plain", "html") and first_text[0]:
@@ -819,7 +917,31 @@ class ImapMailStore:
 
     def search(self, mailbox: str, query: SearchQuery) -> tuple[int, list[int], list[str]]:
         uidvalidity, uids = self.list_uids(mailbox, build_search_criteria(query) or None)
+        if query.has_attachment_filter():
+            uids = self._filter_attachments(mailbox, uidvalidity, uids, query)
         return uidvalidity, uids, search_notes(query)
+
+    def _filter_attachments(self, mailbox: str, uidvalidity: int, uids: list[int],
+                            query: SearchQuery) -> list[int]:
+        """Keep the UIDs whose MIME structure satisfies the attachment filters."""
+        if len(uids) > ATTACHMENT_FILTER_MAX:
+            raise MailError(ErrorCode.LIMIT_EXCEEDED,
+                            f"attachment filters must check {len(uids)} messages in this "
+                            "mailbox; add other criteria (dates, sender, subject) to narrow "
+                            "the search", matches=len(uids), limit=ATTACHMENT_FILTER_MAX)
+        if not uids:
+            return []
+
+        def run(conn: _Conn) -> dict[int, dict[bytes, Any]]:
+            self._open(conn, mailbox, uidvalidity, write=False)
+            data: dict[int, dict[bytes, Any]] = {}
+            for chunk in _chunks(list(uids)):
+                data.update(self._fetch_present(conn, chunk, ["BODYSTRUCTURE"]))
+            return data
+
+        data = self._exec(run, retry=True, what="fetch")
+        return [uid for uid in uids if uid in data
+                and _attachments_match(data[uid].get(b"BODYSTRUCTURE"), query)]
 
     def find_by_message_id(self, mailbox: str, message_id: str) -> tuple[int, list[int]]:
         return self.list_uids(mailbox, ["HEADER", "Message-ID", message_id.strip()])
