@@ -221,6 +221,22 @@ def encode_criteria(criteria: list[Any]) -> list[bytes]:
     return out
 
 
+# Bridge's per-message Proton ID. Live runs found it identical in a message's folder,
+# label and All Mail occurrences (docs/compatibility.md).
+PROVIDER_ID_HEADER = "X-PM-INTERNAL-ID"
+
+
+def _provider_id(item: dict[bytes, Any]) -> str | None:
+    """The X-Pm-Internal-Id value from a HEADER.FIELDS fetch item, if present."""
+    for key, value in item.items():
+        if key.startswith(b"BODY[HEADER.FIELDS") and isinstance(value, bytes):
+            for line in value.replace(b"\r\n ", b" ").split(b"\r\n"):
+                name, _, rest = line.partition(b":")
+                if name.strip().upper() == PROVIDER_ID_HEADER.encode():
+                    return rest.strip().decode("ascii", "replace") or None
+    return None
+
+
 def _check_flag(flag: str, *, allow_system: bool = True) -> None:
     if not _FLAG_RE.match(flag) or (flag.startswith("\\") and not allow_system):
         raise invalid("invalid flag or keyword", flag=flag[:40])
@@ -808,7 +824,8 @@ class ImapMailStore:
                         ) -> list[MessageSummary]:
         if not uids:
             return []
-        fields = ["FLAGS", "INTERNALDATE", "RFC822.SIZE", "ENVELOPE", "BODYSTRUCTURE"]
+        fields = ["FLAGS", "INTERNALDATE", "RFC822.SIZE", "ENVELOPE", "BODYSTRUCTURE",
+                  f"BODY.PEEK[HEADER.FIELDS ({PROVIDER_ID_HEADER})]"]
 
         def run(conn: _Conn) -> dict[int, dict[bytes, Any]]:
             self._open(conn, mailbox, uidvalidity, write=False)
@@ -826,11 +843,12 @@ class ImapMailStore:
             env = item.get(b"ENVELOPE")
             handle = MessageHandle(account=self.account, mailbox=mailbox,
                                    uidvalidity=uidvalidity, uid=uid)
+            sender: dict[str, Any] = {"from": _addresses(env.from_) if env else []}
             out.append(MessageSummary(
                 handle=handle.token(), mailbox=mailbox, uid=uid,
                 message_id=_text(env.message_id) if env else None,
                 subject=_decode_header_text(env.subject) if env else None,
-                **{"from": _addresses(env.from_) if env else []},
+                **sender,
                 to=_addresses(env.to) if env else [],
                 cc=_addresses(env.cc) if env else [],
                 date=env.date if env else None,
@@ -839,6 +857,7 @@ class ImapMailStore:
                 flags=_flags(item.get(b"FLAGS")),
                 has_attachments=(_has_attachments(item[b"BODYSTRUCTURE"])
                                  if b"BODYSTRUCTURE" in item else None),
+                provider_id=_provider_id(item),
             ))
         return out
 

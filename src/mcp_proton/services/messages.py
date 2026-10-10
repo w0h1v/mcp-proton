@@ -33,6 +33,7 @@ from ..domain.models import (
     Message,
     MessageHandle,
     MessageSummary,
+    Occurrence,
     OperationOutcome,
     OperationStatus,
     Page,
@@ -238,19 +239,71 @@ def _sort_ts(s: MessageSummary) -> float:
     return dt.timestamp()
 
 
+# Mailboxes an account-wide search skips: Starred only repeats flagged messages and
+# containers hold no messages.
+_ACCOUNT_WIDE_SKIP = frozenset({MailboxRole.STARRED, MailboxRole.CONTAINER})
+# Which occurrence represents a grouped message: its location first, then the rest.
+_PRIMARY_RANK = {MailboxRole.INBOX: 0, MailboxRole.FOLDER: 0, MailboxRole.ARCHIVE: 0,
+                 MailboxRole.SENT: 0, MailboxRole.DRAFTS: 0, MailboxRole.SPAM: 1,
+                 MailboxRole.TRASH: 1, MailboxRole.LABEL: 2, MailboxRole.ALL_MAIL: 3}
+
+
+def _identity(s: MessageSummary) -> tuple[str, ...]:
+    """Key grouping one message's occurrences: Proton's message ID when Bridge
+    provides it, else the Message-ID header, else the occurrence itself."""
+    if s.provider_id:
+        return ("pm", s.provider_id)
+    if s.message_id:
+        return ("mid", s.message_id)
+    return ("occ", s.mailbox, str(s.uid))
+
+
+def _account_scope(app: MailApp, caller: CallerContext, account: str
+                   ) -> tuple[list[str], int, dict[str, MailboxRole]]:
+    """Every searchable mailbox the caller may read; returns (scope, skipped, roles)."""
+    app.authorize_read(caller, account, [], kind="messages.search")
+    boxes = app.store(account).list_mailboxes()
+    roles = {b.name: b.role for b in boxes}
+    scope: list[str] = []
+    skipped = 0
+    for b in boxes:
+        if not b.selectable or b.role in _ACCOUNT_WIDE_SKIP:
+            continue
+        try:
+            app.authorize_read(caller, account, [b.name], kind="messages.search")
+        except MailError as e:
+            if e.code not in (ErrorCode.POLICY_DENIED, ErrorCode.CONSTRAINT_VIOLATION):
+                raise
+            skipped += 1
+            continue
+        scope.append(b.name)
+    return scope, skipped, roles
+
+
 def search(app: MailApp, caller: CallerContext, account: str, query: SearchQuery,
            mailboxes: list[str] | None = None, limit: int = 50,
-           cursor: str | None = None) -> SearchResult:
+           cursor: str | None = None, *, account_wide: bool = False) -> SearchResult:
     """Structured search. Default scope is INBOX only (disclosed in ``notes``);
-    pass ``mailboxes`` to widen it. Mailboxes are searched sequentially and the
-    results merged newest first by internal date (UID order within a mailbox).
+    pass ``mailboxes`` to widen it, or ``account_wide`` for every mailbox the caller
+    may read. Mailboxes are searched sequentially and the results merged newest
+    first by internal date (UID order within a mailbox). Over several mailboxes,
+    occurrences of one message are grouped into a single item with ``occurrences``.
     Completeness is always ``unknown``: Bridge sync state cannot be established."""
-    default_scope = not mailboxes
-    scope = canonical_mailboxes(app, account, mailboxes) if mailboxes else ["INBOX"]
-    app.authorize_read(caller, account, scope, kind="messages.search")
+    if account_wide and mailboxes:
+        raise invalid("pass either mailboxes or account_wide, not both")
+    skipped = 0
+    roles: dict[str, MailboxRole] = {}
+    if account_wide:
+        scope, skipped, roles = _account_scope(app, caller, account)
+    else:
+        scope = canonical_mailboxes(app, account, mailboxes) if mailboxes else ["INBOX"]
+        app.authorize_read(caller, account, scope, kind="messages.search")
     require_content_search_allowed(app, caller, query)
     limit = _clamp_limit(app, limit)
     store = app.store(account)
+    grouped = len(scope) > 1
+    if grouped and not roles:
+        roles = {b.name: b.role for b in store.list_mailboxes()}
     qhash = hashlib.sha256(
         (query.model_dump_json(by_alias=True, exclude_none=True) + "|" + "\x00".join(scope))
         .encode()).hexdigest()[:16]
@@ -284,28 +337,65 @@ def search(app: MailApp, caller: CallerContext, account: str, query: SearchQuery
     for idx, mb in enumerate(scope):
         if cands[mb]:
             heapq.heappush(heap, (-_sort_ts(cands[mb][0]), idx, mb))
-    items: list[MessageSummary] = []
+    groups: dict[tuple[str, ...], list[MessageSummary]] = {}
     new_last = dict(last)
-    while heap and len(items) < limit:
+
+    def take() -> MessageSummary:
         _, idx, mb = heapq.heappop(heap)
         s = cands[mb][pos[mb]]
-        items.append(s)
         new_last[mb] = s.uid
         pos[mb] += 1
         if pos[mb] < len(cands[mb]):
             heapq.heappush(heap, (-_sort_ts(cands[mb][pos[mb]]), idx, mb))
+        return s
+
+    while heap and len(groups) < limit:
+        s = take()
+        groups.setdefault(_identity(s) if grouped else ("occ", s.mailbox, str(s.uid)),
+                          []).append(s)
+    if grouped:
+        # Other occurrences of the last messages usually sort next (same internal
+        # date); fold them in now rather than repeat the message on the next page.
+        while heap:
+            _, _, mb = heap[0]
+            if _identity(cands[mb][pos[mb]]) not in groups:
+                break
+            s = take()
+            groups[_identity(s)].append(s)
+
+    items: list[MessageSummary] = []
+    for occ in groups.values():
+        if not grouped:
+            items.append(occ[0])
+            continue
+        primary = min(occ, key=lambda o: _PRIMARY_RANK.get(roles.get(o.mailbox,
+                                                                     MailboxRole.OTHER), 4))
+        items.append(primary.model_copy(update={"occurrences": [
+            Occurrence(mailbox=o.mailbox, role=(r.value if (r := roles.get(o.mailbox))
+                                               else None), handle=o.handle)
+            for o in occ]}))
     more = any(u < new_last[mb] for mb in scope if mb in new_last for u in hits[mb]) or any(
         hits[mb] for mb in scope if mb not in new_last)
     next_cursor = (encode_cursor({"k": "search", "q": qhash, "v": uvs, "l": new_last})
                    if more and items else None)
 
-    if default_scope:
-        notes.append("Searched INBOX only (default scope); pass mailboxes to search elsewhere.")
-    else:
+    if account_wide:
+        notes.append(f"Searched all {len(scope)} readable mailboxes, including All Mail; "
+                     "Starred is skipped because it repeats flagged messages.")
+        if skipped:
+            notes.append(f"{skipped} mailbox(es) were skipped because policy does not allow "
+                         "reading them.")
+    elif mailboxes:
         notes.append("Searched: " + ", ".join(scope) + ".")
-    if len(scope) > 1:
-        notes.append("Results are merged newest first by internal date; a message with several "
-                     "occurrences (for example labels) can appear more than once.")
+    else:
+        notes.append("Searched INBOX only (default scope); pass mailboxes or account_wide "
+                     "to search elsewhere.")
+    if grouped:
+        notes.append("Each item is one message; occurrences lists every mailbox it was found "
+                     "in, and handle is its location occurrence. Occurrences are grouped by "
+                     "Proton's message ID (X-Pm-Internal-Id), else by Message-ID. total counts "
+                     "occurrences, not messages. A message can still repeat across pages if "
+                     "its occurrences have different dates.")
     return SearchResult(items=items, total=total, next_cursor=next_cursor, scope=scope,
                         completeness="unknown", notes=notes)
 
@@ -857,7 +947,7 @@ def bulk_preview(app: MailApp, caller: CallerContext, account: str, operation: s
     plans, _ = _plan_sources(app, account, spec, names, resolved)
     store = app.store(account)
 
-    seen_ids: set[str] = set()
+    seen_ids: set[tuple[str, ...]] = set()
     unique = 0
     stale_groups = 0
     by_mailbox: list[dict[str, Any]] = []
@@ -878,10 +968,8 @@ def bulk_preview(app: MailApp, caller: CallerContext, account: str, operation: s
         try:
             for chunk in _chunks(hs):
                 for s in store.fetch_summaries(mb, uv, [h.uid for h in chunk]):
-                    key = (s.message_id or "").strip()
-                    if not key:
-                        unique += 1
-                    elif key not in seen_ids:
+                    key = _identity(s)
+                    if key not in seen_ids:
                         seen_ids.add(key)
                         unique += 1
         except MailError as exc:
@@ -900,9 +988,11 @@ def bulk_preview(app: MailApp, caller: CallerContext, account: str, operation: s
     return {
         "account": account, "operation": operation, "occurrences": len(parsed),
         "by_mailbox": by_mailbox,
-        "unique_messages": {"count": unique, "certainty": "heuristic", "basis": "Message-ID",
-                            "note": "Messages without a Message-ID count individually; the "
-                                    "same message in several mailboxes (labels) counts once."},
+        "unique_messages": {"count": unique, "certainty": "heuristic",
+                            "basis": "X-Pm-Internal-Id, else Message-ID",
+                            "note": "The same message in several mailboxes (labels) counts "
+                                    "once; messages with neither identifier count "
+                                    "individually."},
         "policy": policy, "stale_mailboxes": stale_groups, "truncated": truncated,
         "summary": f"{operation} on {_plural(len(parsed))}",
     }

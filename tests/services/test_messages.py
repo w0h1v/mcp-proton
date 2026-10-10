@@ -201,6 +201,89 @@ def test_search_respects_mailbox_constraint(make_app, caller, seed):
     assert e.value.code is ErrorCode.CONSTRAINT_VIOLATION
 
 
+def _occurrences(item):
+    return sorted(o.mailbox for o in item.occurrences)
+
+
+def test_multi_mailbox_search_groups_occurrences_by_provider_id(app, caller, seed):
+    app.store(ACCOUNT).create_mailbox("Labels/work")
+    pm = "X-Pm-Internal-Id: abc123==\r\n"
+    seed("INBOX", 1, subject="needle grouped", message_id="<g@x>", extra_headers=pm)
+    # different Message-IDs: only the provider ID can group these
+    seed("Labels/work", 1, subject="needle grouped", message_id="<g2@x>", extra_headers=pm)
+    seed("Archive", 1, subject="needle other")
+    res = messages.search(app, caller, ACCOUNT, SearchQuery(subject="needle"),
+                          mailboxes=["Labels/work", "INBOX", "Archive"])
+    assert len(res.items) == 2 and res.total == 3
+    [grouped] = [i for i in res.items if i.subject == "needle grouped"]
+    assert _occurrences(grouped) == ["INBOX", "Labels/work"]
+    assert grouped.mailbox == "INBOX"  # the location occurrence, not the label
+    assert {o.role for o in grouped.occurrences} == {"inbox", "label"}
+    [other] = [i for i in res.items if i.subject == "needle other"]
+    assert _occurrences(other) == ["Archive"]
+    dumped = grouped.model_dump(by_alias=True)
+    assert "provider_id" not in dumped and "abc123" not in str(dumped)
+    assert any("occurrences" in n for n in res.notes)
+
+
+def test_grouping_falls_back_to_message_id(app, caller, seed):
+    seed("INBOX", 1, subject="needle", message_id="<same@x>")
+    seed("Archive", 1, subject="needle", message_id="<same@x>")
+    res = messages.search(app, caller, ACCOUNT, SearchQuery(subject="needle"),
+                          mailboxes=["INBOX", "Archive"])
+    [item] = res.items
+    assert _occurrences(item) == ["Archive", "INBOX"]
+
+
+def test_grouped_message_is_not_repeated_on_the_next_page(app, caller, seed):
+    for i in range(3):
+        mid = f"<p{i}@x>"
+        seed("INBOX", 1, subject=f"needle {i}", message_id=mid)
+        seed("Archive", 1, subject=f"needle {i}", message_id=mid)
+    q = SearchQuery(subject="needle")
+    seen: list[str] = []
+    cursor = None
+    while True:
+        res = messages.search(app, caller, ACCOUNT, q, mailboxes=["INBOX", "Archive"],
+                              limit=1, cursor=cursor)
+        for item in res.items:
+            seen.append(item.subject)
+            assert len(item.occurrences) == 2
+        cursor = res.next_cursor
+        if not cursor:
+            break
+    assert sorted(seen) == ["needle 0", "needle 1", "needle 2"]
+
+
+def test_account_wide_search(app, caller, seed):
+    seed("INBOX", 1, subject="needle in inbox")
+    seed("Trash", 1, subject="needle in trash")
+    seed("Starred", 1, subject="needle starred view")
+    res = messages.search(app, caller, ACCOUNT, SearchQuery(subject="needle"),
+                          account_wide=True)
+    assert "Starred" not in res.scope and {"INBOX", "Trash", "All Mail"} <= set(res.scope)
+    assert {i.subject for i in res.items} == {"needle in inbox", "needle in trash"}
+    assert any("all" in n and "readable mailboxes" in n for n in res.notes)
+    with pytest.raises(MailError) as e:
+        messages.search(app, caller, ACCOUNT, SearchQuery(), mailboxes=["INBOX"],
+                        account_wide=True)
+    assert e.value.code is ErrorCode.INVALID_REQUEST
+
+
+def test_account_wide_search_skips_mailboxes_policy_excludes(make_app, caller, seed):
+    app = make_app(Preset.AUTONOMOUS, constraints=Constraints(
+        allowed_mailboxes={ACCOUNT: ["INBOX"]}))
+    seed_store = app.store(ACCOUNT)
+    from tests.services.conftest import make_raw
+
+    seed_store.append("INBOX", make_raw(subject="needle a"))
+    seed_store.append("Archive", make_raw(subject="needle b"))
+    res = messages.search(app, caller, ACCOUNT, SearchQuery(subject="needle"),
+                          account_wide=True)
+    assert res.scope == ["INBOX"] and [i.subject for i in res.items] == ["needle a"]
+    assert any("skipped because policy" in n for n in res.notes)
+
+
 # ------------------------------------------------------------------ flags
 
 

@@ -26,3 +26,4 @@ Not released. Implemented and tested against fake IMAP/SMTP servers only; not ye
 - The probe polls All Mail, which Bridge fills late, before reading a missing message as destroyed (`--all-mail-wait`), records whether Proton's `X-Pm-*` identity headers match across a message's occurrences, and no longer inspects or deletes a folder it already deleted.
 - Searches using `any_of` (OR) or `not` are sent in the form RFC 3501 requires; Bridge rejected the previous form.
 - The probe checks OR, NOT, nested and non-ASCII searches against Bridge, and `probe --record-report` records a reviewed report without rerunning the probe.
+- `messages_search` takes `account_wide` to search every readable mailbox, including All Mail. Over several mailboxes, each result is one message with an `occurrences` list, grouped by Proton's message ID (`X-Pm-Internal-Id`), else by Message-ID.

@@ -82,16 +82,22 @@ def build(gw: Gateway) -> LocalProvider:
 
     @gw.tool(p, "messages_search",
              "Structured search (sender, recipients, subject, body, dates, size, flags, "
-             "headers, any_of/not combinations). Searches INBOX unless mailboxes is given. "
-             "Completeness is always reported as unknown.", title="Search messages")
+             "headers, any_of/not combinations). Searches INBOX unless mailboxes or "
+             "account_wide is given. Over several mailboxes each item is one message, with "
+             "occurrences listing every mailbox it is in. Completeness is always reported "
+             "as unknown.", title="Search messages")
     def messages_search(
         account: AccountParam, query: SearchQuery,
         mailboxes: Annotated[list[str] | None, Field(
             max_length=50, description="Mailboxes to search; default INBOX only.")] = None,
         limit: Limit = 50,  # type: ignore[valid-type]
         cursor: CursorParam = None,
+        account_wide: Annotated[bool, Field(
+            description="Search every mailbox you may read, including All Mail (not "
+                        "Starred). Cannot be combined with mailboxes.")] = False,
     ) -> dict[str, Any]:
-        return gw.read(lambda c: messages.search(app, c, account, query, mailboxes, limit, cursor))
+        return gw.read(lambda c: messages.search(app, c, account, query, mailboxes, limit,
+                                                 cursor, account_wide=account_wide))
 
     @gw.tool(p, "messages_bulk_preview",
              "Preview a bulk change without applying it: occurrences per mailbox, a heuristic "
