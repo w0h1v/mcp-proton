@@ -186,11 +186,13 @@ _QUOTE_CHARS = re.compile(r'[\x00-\x20"\\(){%*\]]')  # atom-specials (RFC 3501)
 
 
 def encode_criteria(criteria: list[Any]) -> list[bytes]:
-    """Flatten criteria to IMAP tokens (parentheses are separate tokens).
+    """Flatten criteria to the IMAP tokens IMAPClient sends, separated by spaces.
 
-    IMAPClient's own normaliser glues ")" onto the last item of a group, which
-    corrupts a trailing non-ASCII literal, and ignores the charset for nested
-    groups. 8-bit values stay unquoted so IMAPClient sends them as literals.
+    RFC 3501 allows no space after "(" or before ")", and Bridge's parser rejects
+    one (``OR ( FROM a ) ( SUBJECT b )`` failed live). So each parenthesis is
+    joined to the token beside it: ``OR (FROM a) (SUBJECT b)``. A non-ASCII value
+    is sent as a literal, which nothing may be joined to; a group ending in one
+    gets a trailing ``ALL`` (a no-op under AND) to carry the ")".
     """
     out: list[bytes] = []
     for item in criteria:
@@ -201,7 +203,12 @@ def encode_criteria(criteria: list[Any]) -> list[bytes]:
         if out and out[-1] == b"UID" and isinstance(item, str):
             out.append(item.encode("ascii"))  # a sequence set is an atom ("5:*")
         elif isinstance(item, list):
-            out += [b"(", *encode_criteria(item), b")"]
+            group = encode_criteria(item) or [b"ALL"]
+            if not group[-1].isascii():
+                group.append(b"ALL")
+            group[0] = b"(" + group[0]
+            group[-1] = group[-1] + b")"
+            out += group
         elif isinstance(item, int):
             out.append(str(item).encode("ascii"))
         elif isinstance(item, (date, datetime)):

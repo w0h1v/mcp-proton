@@ -183,6 +183,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--record", action="store_true",
                    help="merge observed results into the evidence file after review")
     p.add_argument("--reviewed-by", default="owner")
+    p.add_argument("--record-report", type=Path, metavar="PROBE_JSON",
+                   help="record an existing, reviewed report instead of running the probe")
     p.add_argument("--pace", type=float, default=2.0, metavar="SECONDS",
                    help="pause between probes so Bridge can apply each change (default 2)")
     p.add_argument("--all-mail-wait", type=float, default=30.0, metavar="SECONDS",
@@ -680,6 +682,15 @@ class Cli:
         from ..config import config_dir
         from . import probe
 
+        if self.a.record_report:
+            report = probe.load_report(self.a.record_report)
+            if report.account != self.a.account:
+                raise CliError(f"the report is for account {report.account!r}, "
+                               f"not {self.a.account!r}")
+            path = (self.dir or config_dir()) / "compatibility.json"
+            n = probe.record_evidence(report, path, self.a.reviewed_by)
+            print(f"Recorded {n} observation(s) from {self.a.record_report} in {path}")
+            return 0
         if self.a.cleanup:
             cfg = load_service_config(self.dir)
             store = open_store(cfg.account(self.a.account))

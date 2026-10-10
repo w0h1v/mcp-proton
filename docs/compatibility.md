@@ -48,11 +48,13 @@ Evidence comes from a live probe against a **dedicated test account**. The probe
 
 2. Review the report by hand. The probe records what was observed. It does not decide what Bridge should do.
 
-3. Merge the reviewed observations into the evidence file with `--record`:
+3. Merge the report you reviewed into the evidence file. This does not connect to Bridge or rerun the probe:
 
    ```sh
-   mcp-proton probe <test account> --yes-dedicated-test-account --record --reviewed-by "<reviewer>"
+   mcp-proton probe <test account> --record-report probe-report.json --reviewed-by "<reviewer>"
    ```
+
+   `--record` on a probe run records that run's results without a separate review step.
 
 Each recorded observation adds the Bridge version to `versions` for its operation, and adds an entry to `evidence`:
 
@@ -97,6 +99,9 @@ Findings from live runs. They are not evidence records (those come from `mcp-pro
 | 2026-10-10 | Every message carried `X-Pm-Internal-Id`, `X-Pm-Gluon-Id` and `X-Pm-External-Id` headers in both its folder and label occurrences. Whether the values match across occurrences was not recorded. | The probe now records, per header, whether the value is the same in every occurrence (never the values). |
 | 2026-10-10 | All Mail showed none of the probe's messages during the run, including ones that existed; later reads found them. Expunge in a folder and deleting a non-empty folder left the message in no checked mailbox, including Trash. Because All Mail lagged, this does not show whether the message was destroyed. | Permanent deletion stays limited to Trash and Spam, and deleting a non-empty folder stays classed as possible destruction. The probe now polls All Mail (`--all-mail-wait`, default 30 s), with a control message that must appear, before reading absence as destruction. |
 | 2026-10-10 | Bridge logged one HTTP 422 (code 2501, missing message) and one local-state cleanup error during the run. The cause was not established. The probe also re-examined and re-deleted the folder its folder-delete step had already removed. | The probe no longer inspects or deletes a mailbox it has already deleted. |
+| 2026-10-10 | Second full run with All Mail polling. After expunge in a folder, the message appeared in All Mail after 24 s; after deleting a non-empty folder, its message appeared in All Mail after 10 s. The control message appeared after 10 s. | Neither operation destroyed the message in this configuration: it left the folder and stayed in All Mail. The effect table stays conservative (expunge only from Trash or Spam; deleting a non-empty folder is still treated as possible destruction) until more runs agree. |
+| 2026-10-10 | `X-Pm-Internal-Id` (and the other `X-Pm-*` headers) had the same value in the folder, label and All Mail occurrences of one message. | A candidate for an account-scoped message identity. One message does not establish uniqueness or stability across resyncs or Bridge updates. |
+| 2026-10-10 | Searches with `any_of` (OR) and `not` failed with "IMAP server rejected search". The adapter sent `OR ( FROM a ) ( SUBJECT b )`; RFC 3501 allows no space inside the parentheses, and Bridge rejects it. The fake test server accepted it. | Parentheses are now joined to their neighbours (`OR (FROM a) (SUBJECT b)`); a group ending in a non-ASCII literal gets a trailing `ALL`. A test checks the exact bytes sent. The probe has a `search` step that runs OR, NOT, nested and non-ASCII searches against Bridge. |
 | 2026-10-09 | An unpaced full probe run was followed by a Bridge sync error (UserBadEvent). A paced rerun (stop on first error) did not reproduce it. Cause not established. | The probe pauses between steps by default (`--pace`, 2 s) and supports `--stop-on-error`. |
 
 ## Rerunning tests

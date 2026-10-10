@@ -102,10 +102,50 @@ def test_criteria_rejects_bad_input():
 
 def test_encode_criteria_groups_and_literals():
     toks = encode_criteria(["OR", ["FROM", "a b"], ["SUBJECT", "héllo"], "LARGER", 5])
-    assert toks == [b"OR", b"(", b"FROM", b'"a b"', b")", b"(", b"SUBJECT",
-                    "héllo".encode(), b")", b"LARGER", b"5"]
+    # parentheses joined to their neighbours; a literal cannot carry ")" so ALL does
+    assert toks == [b"OR", b"(FROM", b'"a b")', b"(SUBJECT", "héllo".encode(), b"ALL)",
+                    b"LARGER", b"5"]
+    assert encode_criteria(["NOT", ["OR", ["SEEN"], ["FROM", "x"]]]) == [
+        b"NOT", b"(OR", b"(SEEN)", b"(FROM", b"x))"]
+    assert encode_criteria(["NOT", []]) == [b"NOT", b"(ALL)"]
     assert encode_criteria(["SUBJECT", 'q"x\\']) == [b"SUBJECT", b'"q\\"x\\\\"']
     assert encode_criteria(["SUBJECT", ""]) == [b"SUBJECT", b'""']
+
+
+def _wire(monkeypatch):
+    import imaplib
+
+    sent: list[bytes] = []
+    real = imaplib.IMAP4.send
+
+    def send(self, data):
+        sent.append(bytes(data))
+        return real(self, data)
+
+    monkeypatch.setattr(imaplib.IMAP4, "send", send)
+    return sent
+
+
+@pytest.mark.parametrize("query, expect", [
+    (SearchQuery(any_of=[SearchQuery(subject="alpha"), SearchQuery(subject="beta")]),
+     {"alpha", "beta"}),
+    (SearchQuery(not_=SearchQuery(subject="alpha")), {"beta", "gamma héllo"}),
+    (SearchQuery(subject="a", not_=SearchQuery(any_of=[SearchQuery(subject="alpha"),
+                                                       SearchQuery(subject="beta")])),
+     {"gamma héllo"}),
+    (SearchQuery(any_of=[SearchQuery(subject="héllo"), SearchQuery(subject="beta")]),
+     {"beta", "gamma héllo"}),
+])
+def test_boolean_search_wire_format_and_results(store, monkeypatch, query, expect):
+    for subject in ("alpha", "beta", "gamma héllo"):
+        store.append("INBOX", mime(subject=subject))
+    sent = _wire(monkeypatch)
+    uv, uids, _ = store.search("INBOX", query)
+    wire = b"".join(d for d in sent if b"SEARCH" in d or not d.startswith(b"A"))
+    # RFC 3501: no space after "(" or before ")" (Bridge rejects them)
+    assert b"( " not in wire and b" )" not in wire, wire
+    got = {s.subject for s in store.fetch_summaries("INBOX", uv, uids)}
+    assert got == expect
 
 
 def test_search_notes():
