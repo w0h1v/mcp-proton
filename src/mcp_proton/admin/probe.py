@@ -309,8 +309,8 @@ class Prober:
 
         cases = {
             "or": (q(any_of=[subj("alpha"), subj("beta")]), {"alpha", "beta"}),
-            "not": (q(subject=tag, not_=q(any_of=[subj("alpha"), subj("delta")])),
-                    {"beta", "gamma"}),
+            # a direct NOT (SUBJECT ...); "nested" covers NOT (OR ...)
+            "not": (q(subject=tag, not_=subj("alpha")), {"beta", "gamma", "delta"}),
             "nested": (q(subject=tag, not_=q(any_of=[subj("alpha"), subj("beta"),
                                                      subj("delta")])), {"gamma"}),
             "non_ascii_subject": (q(subject="h\u00e9llo"), {"gamma"}),
