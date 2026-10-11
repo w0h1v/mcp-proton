@@ -342,9 +342,16 @@ class Cli:
         accounts = [a.account] if a.account else [x.name for x in cfg.accounts] or ["*"]
         client = a.client or "default"
         view = {acc: engine.explain(pol, client, acc, a.mailbox) for acc in accounts}
+        # A client's own constraints apply on top of (intersected with) the global ones.
+        cc = pol.client(a.client) if a.client else None
+        client_cons = (cc.constraints.model_dump(mode="json")
+                       if cc is not None and cc.constraints is not None else None)
         if a.json:
             _dump({"preset": pol.preset, "client": client, "mailbox": a.mailbox,
                    "effective": view, "constraints": pol.constraints.model_dump(mode="json"),
+                   "client_constraints": client_cons,
+                   "client_review_channel": cc.review_channel if cc else None,
+                   "client_revoked": cc.revoked if cc else None,
                    "rules": [r.model_dump(mode="json") for r in pol.rules],
                    "paused_accounts": pol.paused_accounts,
                    "approval_ttl_seconds": pol.approval_ttl_seconds})
@@ -360,9 +367,22 @@ class Cli:
                    ["FAMILY", "ACTION", "SOURCE"])
         if pol.paused_accounts:
             print("\nPaused accounts:", ", ".join(pol.paused_accounts))
-        print("\nConstraints:")
+        print("\nConstraints (global):")
         for k, v in pol.constraints.model_dump(mode="json").items():
             print(f"  {k}: {v}")
+        if a.client:
+            if cc is None:
+                print(f"\nClient {a.client!r} is not configured; only the global "
+                      "constraints apply.")
+            else:
+                print(f"\nClient {a.client!r}: review channel {cc.review_channel}"
+                      + (", REVOKED" if cc.revoked else ""))
+                if client_cons is None:
+                    print("  No client constraints; only the global constraints apply.")
+                else:
+                    print("Constraints (client, applied on top of the global ones):")
+                    for k, v in client_cons.items():
+                        print(f"  {k}: {v}")
         return 0
 
     def cmd_policy_preset(self) -> int:

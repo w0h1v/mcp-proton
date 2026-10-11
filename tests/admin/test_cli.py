@@ -305,3 +305,22 @@ def test_serve_without_mcp_layer_reports_cleanly(capsys, monkeypatch):
     monkeypatch.setattr(builtins, "__import__", fake)
     code, _, err = run(capsys, "serve", factory=app_factory)
     assert code == 1 and "not available" in err
+
+
+def test_policy_show_includes_client_constraints(capsys):
+    run(capsys, *init_args("--preset", "reader"))
+    run(capsys, "clients", "add", "agent1")
+    run(capsys, "policy", "constraints", "set", "--client", "agent1",
+        "--allowed-recipients", "@allowed.test", "--max-sends-per-day", "1")
+    code, out, _ = run(capsys, "policy", "show", "--client", "agent1", "--json")
+    data = json.loads(out)
+    assert code == 0
+    assert data["client_constraints"]["allowed_recipients"] == ["@allowed.test"]
+    assert data["client_constraints"]["max_sends_per_day"] == 1
+    assert data["constraints"]["allowed_recipients"] is None  # global unchanged
+    assert data["client_review_channel"] == "queue" and data["client_revoked"] is False
+    _, text, _ = run(capsys, "policy", "show", "--client", "agent1")
+    assert "Constraints (client, applied on top of the global ones):" in text
+    assert "@allowed.test" in text
+    _, other, _ = run(capsys, "policy", "show", "--client", "nobody")
+    assert "not configured" in other
