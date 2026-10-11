@@ -24,6 +24,10 @@ from .errors import invalid
 
 _HANDLE_PREFIX = "h1."
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
+# A header name that is both an RFC 5322 field-name (printable ASCII except ":") and
+# an IMAP atom (RFC 3501: no space, ( ) { % * " \ ]), so it cannot change the
+# syntax of the HEADER and HEADER.FIELDS commands it is sent in.
+HEADER_NAME_RE = re.compile(r"[!#$&'+,\-./0-9;<=>?@A-Z\[\^_`a-z|}~]{1,76}")
 
 
 def canonical_inbox(name: str) -> str:
@@ -263,8 +267,11 @@ class SearchQuery(Model):
     @classmethod
     def _header_no_control_chars(cls, v: dict[str, str] | None) -> dict[str, str] | None:
         for k, val in (v or {}).items():
-            if _CONTROL_CHARS.search(k) or _CONTROL_CHARS.search(val) or ":" in k:
-                raise ValueError("header names/values must not contain control characters")
+            if not HEADER_NAME_RE.fullmatch(k):
+                raise ValueError("header names must be printable ASCII without spaces, "
+                                 "colons or IMAP special characters")
+            if _CONTROL_CHARS.search(val):
+                raise ValueError("header values must not contain control characters")
         return v
 
 

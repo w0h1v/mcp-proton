@@ -399,6 +399,26 @@ def test_encoded_headers_are_rechecked_against_decoded_text(encoded_box, query, 
     assert {names[u] for u in uids} == expect
 
 
+def test_recheck_requires_every_term_on_the_same_header(encoded_box):
+    """subject plus header={"Subject": ...}: both must match, as in IMAP."""
+    store, names = encoded_box
+    both = SearchQuery(subject="rechnung", header={"Subject": "märz"})
+    assert [names[u] for u in store.search("INBOX", both)[1]] == ["maerz"]
+    clash = SearchQuery(subject="bar", header={"Subject": "rechnung"})
+    assert store.search("INBOX", clash)[1] == []
+    case_dupes = SearchQuery(header={"Subject": "rechnung", "SUBJECT": "nope"})
+    assert store.search("INBOX", case_dupes)[1] == []
+
+
+@pytest.mark.parametrize("name", ["Sub ject", "X:Y", "X-A)", "X-A(", "BODY.PEEK[]",
+                                  "X{1}", 'X"'])
+def test_header_names_that_would_change_imap_syntax_are_rejected(name):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        SearchQuery(header={name: "x"})
+
+
 def test_gluon_rule_alone_misses_encoded_headers(encoded_box):
     """The emulated server rule really fails without the recheck."""
     store, names = encoded_box

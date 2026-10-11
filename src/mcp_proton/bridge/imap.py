@@ -53,6 +53,7 @@ from imapclient.response_parser import parse_message_list
 from ..config import AccountConfig, Security
 from ..domain.errors import ErrorCode, MailError, invalid, not_found, stale
 from ..domain.models import (
+    HEADER_NAME_RE,
     Address,
     MailboxInfo,
     MailboxRole,
@@ -266,11 +267,16 @@ _ENVELOPE_ADDRESS_FIELDS = {"from": "from_", "to": "to", "cc": "cc", "bcc": "bcc
 ENCODED_RECHECK_MAX = 5000
 
 
-def _node_text_terms(node: SearchQuery) -> dict[str, str]:
-    """This node's own header-text criteria as {lower-case header name: term}."""
-    terms = {name: getattr(node, attr) for attr, name in _TEXT_FIELDS.items()
-             if getattr(node, attr) is not None}
-    terms.update({k.lower(): v for k, v in (node.header or {}).items()})
+def _node_text_terms(node: SearchQuery) -> dict[str, list[str]]:
+    """This node's own header-text criteria as {lower-case header name: [terms]}. A
+    field can carry several terms (subject plus header={"Subject": ...}); all must
+    match, as in IMAP."""
+    terms: dict[str, list[str]] = {}
+    for attr, name in _TEXT_FIELDS.items():
+        if getattr(node, attr) is not None:
+            terms.setdefault(name, []).append(getattr(node, attr))
+    for key, value in (node.header or {}).items():
+        terms.setdefault(key.lower(), []).append(value)
     return terms
 
 
@@ -1073,8 +1079,9 @@ class ImapMailStore:
 
         def matches(node: SearchQuery, uid: int) -> bool:
             values = decoded.get(uid, {})
-            for field, term in _node_text_terms(node).items():
-                if term.casefold() not in values.get(field, "").casefold():
+            for field, terms in _node_text_terms(node).items():
+                text = values.get(field, "").casefold()
+                if any(term.casefold() not in text for term in terms):
                     return False
             rest = server_set(node)
             if rest is not None and uid not in rest:
@@ -1092,6 +1099,8 @@ class ImapMailStore:
     def _decoded_header_fields(self, mailbox: str, uidvalidity: int, uids: list[int],
                                fields: list[str]) -> dict[int, dict[str, str]]:
         """Decoded text of the given header fields (lower-case names) per UID."""
+        if any(not HEADER_NAME_RE.fullmatch(f) for f in fields):
+            raise invalid("header names must be printable ASCII without spaces or colons")
         names = " ".join(f.upper() for f in fields)
         section = f"BODY.PEEK[HEADER.FIELDS ({names})]"
 
