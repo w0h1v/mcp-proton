@@ -30,3 +30,4 @@ Not released. Implemented and tested against fake IMAP/SMTP servers only; not ye
 - Search filters `has_attachment`, `attachment_name` (filename contains, case-insensitive) and `attachment_type` (`application/pdf`, or a prefix such as `image/`). IMAP cannot search them, so they are applied from each match's MIME structure; they apply to bulk previews and rules too.
 - `messages_get_many` reads up to 20 messages in one call, each with its own result or error.
 - `messages_search` takes `snippets` to add a short excerpt of each result's body, centred on the first body/text term. It reads only the first 4 KB of each message's text part, and is omitted when policy does not release bodies.
+- `messages_search` takes `wait_for_match` (0-60 s): while nothing matches, the first page is searched again every 2 s. The result reports `waited_seconds`, and a miss after the full wait is labelled as not proof of absence, since Bridge applies changes late.

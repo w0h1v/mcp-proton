@@ -275,6 +275,8 @@ class SearchResult(Model):
     scope: list[str]  # mailboxes searched
     completeness: Literal["complete", "unknown"] = "unknown"
     notes: list[str] = Field(default_factory=list)  # disclosed fallbacks
+    # Set when the caller asked to wait for a match: seconds spent re-searching.
+    waited_seconds: float | None = None
 
 
 # ---------------------------------------------------------------- outgoing

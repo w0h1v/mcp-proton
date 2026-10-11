@@ -317,3 +317,14 @@ async def test_get_many_and_search_snippets(app, seed):
         found = await call(c, "messages_search", {
             "account": ACCOUNT, "query": {"body": "brown"}, "snippets": True})
         assert all("brown fox" in i["snippet"] for i in found["items"])
+
+
+async def test_search_wait_for_match_parameter(app, seed):
+    seed(subject="Already visible")
+    async with client_for(app) as c:
+        res = await call(c, "messages_search", {
+            "account": ACCOUNT, "query": {"subject": "Already visible"}, "wait_for_match": 10})
+        assert res["items"] and res["waited_seconds"] == 0
+        bad = await call(c, "messages_search", {
+            "account": ACCOUNT, "query": {}, "wait_for_match": 120})
+        assert "error" in bad
