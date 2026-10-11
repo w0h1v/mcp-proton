@@ -34,3 +34,4 @@ First alpha. Tested against fake IMAP/SMTP servers and on one live Proton Mail B
 - The probe's non-ASCII search cases use an RFC 2047 encoded subject, as real mail does; a raw 8-bit subject is checked for information only, and the subjects Bridge reads back are recorded.
 - Header-text searches (from, to, cc, bcc, subject, header) find messages whose headers are RFC 2047 encoded. Proton Bridge matches the raw header, so these were missed, including ASCII words in subjects that senders had encoded; such messages are now rechecked against their decoded headers. Body and text searches note that Bridge can miss words inside base64 or quoted-printable parts.
 - `policy show --client <id>` shows that client's own constraints, review channel and revoked state alongside the global constraints.
+- The release workflow's archive check no longer fails on a broken pipe (`grep -q` closing the listing early under `pipefail`).

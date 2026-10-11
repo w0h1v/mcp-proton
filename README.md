@@ -11,7 +11,7 @@
   <img alt="Python 3.11 to 3.13" src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-3776ab">
   <a href="https://modelcontextprotocol.io"><img alt="MCP server" src="https://img.shields.io/badge/MCP-server-7c3aed"></a>
   <img alt="Status: alpha" src="https://img.shields.io/badge/status-alpha-orange">
-  <a href="docs/compatibility.md"><img alt="Bridge verification: pending" src="https://img.shields.io/badge/Bridge%20verification-pending-lightgrey"></a>
+  <a href="docs/compatibility.md"><img alt="Bridge tested: 03.27.01" src="https://img.shields.io/badge/Bridge%20tested-03.27.01-yellowgreen"></a>
 </p>
 
 <p align="center">
@@ -59,8 +59,8 @@ flowchart TB
 **Requirements:** a paid Proton Mail plan that includes Bridge, with Bridge installed and signed in, and Python 3.11 or newer. macOS is the first development target. Linux and Windows are untested.
 
 ```sh
-git clone https://github.com/w0h1v/mcp-proton && cd mcp-proton
-uv venv && uv pip install -e .        # or: python -m venv .venv && pip install -e .
+pip install https://github.com/w0h1v/mcp-proton/releases/download/v0.1.0a1/mcp_proton-0.1.0a1-py3-none-any.whl
+# or from source: git clone https://github.com/w0h1v/mcp-proton && cd mcp-proton && uv venv && uv pip install -e .
 mcp-proton init                       # connect Bridge, pin its certificate, choose a preset
 mcp-proton client-config hermes       # or: claude-desktop, generic
 ```
@@ -109,9 +109,9 @@ Each token maps to one client identity. `mcp-proton clients revoke hermes` takes
 |---|---|---|
 | Accounts | `accounts_list`, `accounts_health`, `accounts_capabilities` | Capability report per connected Bridge |
 | Mailboxes and labels | `mailboxes_*`, `labels_*` | Folders, labels, subscriptions, empty Trash/Spam from a snapshot |
-| Reading and search | `messages_list`, `messages_get`, `messages_get_many`, `messages_search`, `conversations_get` | Reading never sets `\Seen` |
-| Organizing | `messages_set_flags`, `messages_move`, `_archive`, `_trash`, `_restore`, `_mark_spam`, `_not_spam` | Per-item results, no false atomicity |
-| Deletion | `messages_mark_deleted`, `messages_expunge` | Trash/Spam only, targeted UIDs only |
+| Reading and search | `messages_list`, `messages_get`, `messages_get_many`, `messages_get_raw`, `messages_search`, `conversations_get` | Reading never sets `\Seen`. Search can span every mailbox (`account_wide`), filter by attachment, add snippets and wait for late mail (`wait_for_match`) |
+| Organizing | `messages_set_flags`, `messages_move`, `_archive`, `_trash`, `_restore`, `_mark_spam`, `_not_spam`, `messages_bulk_preview` | Per-item results, no false atomicity |
+| Deletion | `messages_mark_deleted`, `messages_clear_deleted`, `messages_expunge` | Trash/Spam only, targeted UIDs only |
 | Drafts and sending | `drafts_*`, `mail_send`, `mail_reply`, `mail_forward`, `mail_reconcile` | Stable Message-ID; `delivery_unknown` is never resent |
 | Attachments | `attachments_*`, `exports_attachment` | Size limits, owner-configured folders only |
 | Import and export | `imports_eml`, `imports_mbox`, `exports_messages` | Resumable manifests, duplicate skipping |
