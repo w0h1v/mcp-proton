@@ -24,6 +24,7 @@ import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
+from email.header import Header
 from pathlib import Path
 from typing import Any
 
@@ -286,11 +287,19 @@ class Prober:
 
     def probe_search(self) -> dict[str, Any]:
         """Boolean and non-ASCII searches in the probe folder, checked against the
-        messages it appended. Read-only apart from those appends."""
+        messages it appended. Read-only apart from those appends.
+
+        gamma carries a non-ASCII word in an RFC 2047 encoded subject, as real mail
+        does; required cases must find it. delta carries one as raw UTF-8 header bytes
+        (RFC 6532, rare in practice); its case is recorded for information and does not
+        fail the step. The subject Bridge reports back for each is recorded too."""
         tag = secrets.token_hex(3)
-        names = {k: f"probe search {k} {tag}" for k in ("alpha", "beta", "gamma")}
-        names["gamma"] += " h\u00e9llo"
-        uids = {k: self._append(self.folder, v)[1] for k, v in names.items()}
+        names = {k: f"probe search {k} {tag}" for k in ("alpha", "beta", "gamma", "delta")}
+        subjects = dict(names)
+        subjects["gamma"] = Header(names["gamma"] + " h\u00e9llo", "utf-8").encode()
+        subjects["delta"] = names["delta"] + " w\u00f6rld"  # raw 8-bit header
+        appended = {k: self._append(self.folder, v) for k, v in subjects.items()}
+        uids = {k: a[1] for k, a in appended.items()}
 
         def q(**kw: Any) -> SearchQuery:
             return SearchQuery(**kw)
@@ -300,14 +309,17 @@ class Prober:
 
         cases = {
             "or": (q(any_of=[subj("alpha"), subj("beta")]), {"alpha", "beta"}),
-            "not": (q(subject=tag, not_=subj("alpha")), {"beta", "gamma"}),
-            "nested": (q(subject=tag, not_=q(any_of=[subj("alpha"), subj("beta")])),
-                       {"gamma"}),
+            "not": (q(subject=tag, not_=q(any_of=[subj("alpha"), subj("delta")])),
+                    {"beta", "gamma"}),
+            "nested": (q(subject=tag, not_=q(any_of=[subj("alpha"), subj("beta"),
+                                                     subj("delta")])), {"gamma"}),
+            "non_ascii_subject": (q(subject="h\u00e9llo"), {"gamma"}),
             "non_ascii_in_or": (q(any_of=[q(subject="h\u00e9llo"), subj("beta")]),
                                 {"beta", "gamma"}),
         }
+        informational = {"raw_8bit_subject": (q(subject="w\u00f6rld"), {"delta"})}
         out: dict[str, Any] = {}
-        for name, (query, expect) in cases.items():
+        for name, (query, expect) in {**cases, **informational}.items():
             try:
                 _, found, _ = self.store.search(self.folder, query)
             except MailError as e:
@@ -316,7 +328,15 @@ class Prober:
             got = {k for k, uid in uids.items() if uid in found}
             out[name] = {"ok": True, "matches_expected": got == expect,
                          "expected": sorted(expect), "matched": sorted(got)}
-        failed = sorted(n for n, c in out.items() if not (c["ok"] and c["matches_expected"]))
+        for name in informational:
+            out[name]["informational"] = True
+        uv = appended["gamma"][0]
+        readback = {s.uid: s.subject for s in self.store.fetch_summaries(
+            self.folder, uv, [uids["gamma"], uids["delta"]])}
+        out["subjects_as_read_back"] = {
+            "gamma_rfc2047": readback.get(uids["gamma"]),
+            "delta_raw_8bit": readback.get(uids["delta"])}
+        failed = sorted(n for n in cases if not (out[n]["ok"] and out[n]["matches_expected"]))
         if failed:
             # An error outcome, so --stop-on-error stops and the run is not evidence.
             raise MailError(ErrorCode.UNSUPPORTED_SEMANTICS,
