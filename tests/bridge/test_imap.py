@@ -6,6 +6,7 @@ UIDs start at 101, and it has no Bridge-style label semantics.
 
 from __future__ import annotations
 
+import base64
 import socket
 import threading
 import time
@@ -336,11 +337,102 @@ def test_attachment_filter_refuses_too_many_matches(attachment_box, monkeypatch)
     assert e.value.code is ErrorCode.LIMIT_EXCEEDED
 
 
+def _gluon_like(store):
+    """Replace the server search with Gluon's header rule: a lower-case substring of
+    the raw (still encoded) header. Only the criteria these tests use are modelled."""
+    from email.parser import BytesHeaderParser
+    from email.policy import compat32
+
+    def raw_headers(uv, uid):
+        raw = store.fetch_message("INBOX", uv, uid, header_only=True).raw
+        return BytesHeaderParser(policy=compat32).parsebytes(raw)
+
+    def ev(q, h):
+        terms = {"Subject": q.subject, "From": q.from_, **(q.header or {})}
+        for name, term in terms.items():
+            if term is not None and term.lower() not in str(h.get(name, "")).lower():
+                return False
+        if q.any_of and not any(ev(sub, h) for sub in q.any_of):
+            return False
+        return not (q.not_ is not None and ev(q.not_, h))
+
+    def server_search(mailbox, query):
+        uv, uids = store.list_uids(mailbox)
+        return uv, [u for u in uids if ev(query, raw_headers(uv, u))]
+
+    store._server_search = server_search
+
+
+@pytest.fixture
+def encoded_box(store):
+    b64 = base64.b64encode(b"Quarterly report").decode()
+    msgs = {
+        "maerz": b"Subject: =?utf-8?q?Rechnung_M=C3=A4rz?=\r\nFrom: a@x.test\r\n",
+        "invoice": b"Subject: Invoice March\r\nFrom: a@x.test\r\n",
+        "juergen": b"Subject: hello\r\nFrom: =?utf-8?q?J=C3=BCrgen?= <j@x.test>\r\n",
+        "quarterly": f"Subject: =?utf-8?b?{b64}?=\r\nFrom: a@x.test\r\n".encode(),
+    }
+    uids = {}
+    for name, head in msgs.items():
+        raw = head + b"To: b@x.test\r\nMIME-Version: 1.0\r\n\r\nbody\r\n"
+        uids[store.append("INBOX", raw).uid] = name
+    _gluon_like(store)
+    return store, uids
+
+
+@pytest.mark.parametrize("query, expect", [
+    (SearchQuery(subject="märz"), {"maerz"}),
+    (SearchQuery(subject="QUARTERLY"), {"quarterly"}),  # ASCII word, encoded header
+    (SearchQuery(subject="invoice"), {"invoice"}),
+    (SearchQuery(**{"from": "jürgen"}), {"juergen"}),
+    (SearchQuery(any_of=[SearchQuery(subject="märz"), SearchQuery(subject="invoice")]),
+     {"maerz", "invoice"}),
+    (SearchQuery(not_=SearchQuery(subject="rechnung märz")),
+     {"invoice", "juergen", "quarterly"}),
+    (SearchQuery(any_of=[SearchQuery(subject="quarterly"),
+                         SearchQuery(**{"from": "jürgen"})]), {"quarterly", "juergen"}),
+    (SearchQuery(subject="hello", not_=SearchQuery(**{"from": "jürgen"})), set()),
+])
+def test_encoded_headers_are_rechecked_against_decoded_text(encoded_box, query, expect):
+    store, names = encoded_box
+    _, uids, notes = store.search("INBOX", query)
+    assert {names[u] for u in uids} == expect
+
+
+def test_recheck_requires_every_term_on_the_same_header(encoded_box):
+    """subject plus header={"Subject": ...}: both must match, as in IMAP."""
+    store, names = encoded_box
+    both = SearchQuery(subject="rechnung", header={"Subject": "märz"})
+    assert [names[u] for u in store.search("INBOX", both)[1]] == ["maerz"]
+    clash = SearchQuery(subject="bar", header={"Subject": "rechnung"})
+    assert store.search("INBOX", clash)[1] == []
+    case_dupes = SearchQuery(header={"Subject": "rechnung", "SUBJECT": "nope"})
+    assert store.search("INBOX", case_dupes)[1] == []
+
+
+@pytest.mark.parametrize("name", ["Sub ject", "X:Y", "X-A)", "X-A(", "BODY.PEEK[]",
+                                  "X{1}", 'X"'])
+def test_header_names_that_would_change_imap_syntax_are_rejected(name):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        SearchQuery(header={name: "x"})
+
+
+def test_gluon_rule_alone_misses_encoded_headers(encoded_box):
+    """The emulated server rule really fails without the recheck."""
+    store, names = encoded_box
+    assert store._server_search("INBOX", SearchQuery(subject="märz"))[1] == []
+    _, uids, notes = store.search("INBOX", SearchQuery(subject="märz"))
+    assert [names[u] for u in uids] == ["maerz"]
+    assert any("rechecked" in n for n in notes)
+
+
 def test_search_notes():
     q = SearchQuery(since=datetime(2026, 1, 1), any_of=[SearchQuery(body="x"),
                                                          SearchQuery(subject="ü")])
     notes = " ".join(search_notes(q))
-    assert "day granularity" in notes and "local index" in notes and "UTF-8" in notes
+    assert "day granularity" in notes and "raw message" in notes and "UTF-8" in notes
     assert search_notes(SearchQuery(subject="a")) == []
 
 
