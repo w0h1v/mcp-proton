@@ -2,9 +2,9 @@
 
 All notable changes are recorded here. The project follows semantic versioning from 1.0; before that, tool schemas, preset membership and storage formats may change between alpha releases, and each change will be listed here.
 
-## Unreleased — 0.1.0a1
+## 0.1.0a1 — 2026-10-11
 
-Not released. Implemented and tested against fake IMAP/SMTP servers only; not yet verified against a live Proton Mail Bridge.
+First alpha. Tested against fake IMAP/SMTP servers and on one live Proton Mail Bridge 03.27.01 account (macOS): the full compatibility probe (mailboxes, flags, labels, moves, expunge, trash, identity, import dates, search, drafts, folder delete, IDLE) and one policy-governed send with owner approval. Not yet exercised live: the reply path, recipient-side delivery, other Bridge versions. Known limit: Bridge matches body and text searches against the raw message, so words inside encoded parts can be missed. See docs/compatibility.md.
 
 ### Added
 - Licensed under Apache-2.0.

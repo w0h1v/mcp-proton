@@ -120,5 +120,6 @@ When a rerun fails, change the row to `unverified` for that version, or record t
 
 ## Unknowns
 
-- No Bridge version has been tested. Every Bridge version field is `—`.
+- Only Bridge 03.27.01 on macOS has been tested live, on one account (see Observed Bridge behaviour). The packaged evidence file is empty, so every Bridge version field is `—` until you record your own probe results.
+- Not yet exercised live: replies (`mail_reply`), forwards, recipient-side delivery, Linux and Windows.
 - The fake servers do not model every Bridge behaviour. Unknown behaviour is not covered by the fake-server tests.

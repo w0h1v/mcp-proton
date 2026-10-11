@@ -26,7 +26,7 @@
 **mcp-proton** is an [MCP](https://modelcontextprotocol.io) server that gives AI agents access to Proton Mail through [Proton Mail Bridge](https://proton.me/mail/bridge). You decide what each agent may do, per action: read, organize, draft, send or delete. Every operation goes through one policy engine, whether it comes from an MCP client, the CLI, the review UI or a scheduled job.
 
 > [!IMPORTANT]
-> **Alpha, unreleased.** Everything in the [design](docs/design.md) is implemented and tested against fake IMAP/SMTP servers. **Nothing has been verified against a real Proton Mail Bridge yet.** Every capability reports as `unverified` until the [compatibility probe](#compatibility) runs against a dedicated test account.
+> **Alpha (0.1.0a1).** Everything in the [design](docs/design.md) is implemented and tested against fake IMAP/SMTP servers, and on one live Proton Mail Bridge 03.27.01 account: the full [compatibility probe](#compatibility) and one approved send. The reply path, other Bridge versions and Linux/Windows are not yet tested live; see [docs/compatibility.md](docs/compatibility.md). Capabilities report as `unverified` until you run the probe against your own Bridge and record the results.
 
 Independent project. Not affiliated with or endorsed by Proton AG.
 
