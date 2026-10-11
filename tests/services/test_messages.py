@@ -366,6 +366,62 @@ def test_get_many_returns_each_message_or_its_error(app, caller, seed):
     assert "\\Seen" not in items[0]["message"].flags
 
 
+@pytest.fixture
+def fake_time(monkeypatch):
+    """Fake clock: sleeping advances it; ``on_sleep`` runs a callback per sleep."""
+    state = {"now": 0.0, "sleeps": [], "on_sleep": None}
+
+    def sleep(seconds):
+        state["sleeps"].append(seconds)
+        state["now"] += seconds
+        if state["on_sleep"]:
+            state["on_sleep"](len(state["sleeps"]))
+
+    monkeypatch.setattr(messages, "_sleep", sleep)
+    monkeypatch.setattr(messages, "_clock", lambda: state["now"])
+    return state
+
+
+def test_wait_for_match_finds_a_late_message(app, caller, seed, fake_time):
+    def arrive(n):
+        if n == 3:  # visible only after the third pause
+            seed("INBOX", 1, subject="late arrival")
+
+    fake_time["on_sleep"] = arrive
+    res = messages.search(app, caller, ACCOUNT, SearchQuery(subject="late arrival"),
+                          wait_for_match=30)
+    assert [i.subject for i in res.items] == ["late arrival"]
+    assert res.waited_seconds == 6.0 and fake_time["sleeps"] == [2.0, 2.0, 2.0]
+    assert any("Matched after waiting 6.0 s" in n for n in res.notes)
+
+
+def test_wait_for_match_gives_up_without_claiming_absence(app, caller, fake_time):
+    res = messages.search(app, caller, ACCOUNT, SearchQuery(subject="never"),
+                          wait_for_match=5)
+    assert res.items == [] and res.waited_seconds == 5.0
+    assert fake_time["sleeps"] == [2.0, 2.0, 1.0]  # never sleeps past the limit
+    assert any("not proof" in n for n in res.notes)
+
+
+def test_wait_for_match_does_not_wait_when_something_matches(app, caller, seed, fake_time):
+    seed("INBOX", 1, subject="already here")
+    res = messages.search(app, caller, ACCOUNT, SearchQuery(subject="already here"),
+                          wait_for_match=30)
+    assert res.items and fake_time["sleeps"] == [] and res.waited_seconds == 0
+    plain = messages.search(app, caller, ACCOUNT, SearchQuery(subject="already here"))
+    assert plain.waited_seconds is None
+
+
+def test_wait_for_match_validation(app, caller, seed):
+    seed("INBOX", 3, subject="needle")
+    first = messages.search(app, caller, ACCOUNT, SearchQuery(subject="needle"), limit=1)
+    for kw in ({"wait_for_match": 61}, {"wait_for_match": -1},
+               {"wait_for_match": 5, "cursor": first.next_cursor}):
+        with pytest.raises(MailError) as e:
+            messages.search(app, caller, ACCOUNT, SearchQuery(subject="needle"), **kw)
+        assert e.value.code is ErrorCode.INVALID_REQUEST
+
+
 # ------------------------------------------------------------------ flags
 
 

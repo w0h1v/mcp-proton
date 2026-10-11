@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import threading
+import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -309,10 +310,56 @@ def _account_scope(app: MailApp, caller: CallerContext, account: str
 GROUPED_SEARCH_MAX_OCCURRENCES = 5000
 
 
+# wait_for_match bounds and the pause between re-searches.
+WAIT_FOR_MATCH_MAX = 60
+WAIT_FOR_MATCH_INTERVAL = 2.0
+_sleep = time.sleep  # replaced in tests
+_clock = time.monotonic
+
+
 def search(app: MailApp, caller: CallerContext, account: str, query: SearchQuery,
            mailboxes: list[str] | None = None, limit: int = 50,
            cursor: str | None = None, *, account_wide: bool = False,
-           snippets: bool = False) -> SearchResult:
+           snippets: bool = False, wait_for_match: float = 0) -> SearchResult:
+    """Structured search; see :func:`_search_once`. With ``wait_for_match`` (seconds,
+    first page only) an empty result is retried until something matches or the time
+    runs out: Bridge applies changes some seconds late (All Mail lagged 10-25 s in
+    live runs), so an immediate miss is not a settled answer."""
+    if not 0 <= wait_for_match <= WAIT_FOR_MATCH_MAX:
+        raise invalid(f"wait_for_match must be between 0 and {WAIT_FOR_MATCH_MAX} seconds")
+    if wait_for_match and cursor:
+        raise invalid("wait_for_match applies to the first page only; omit the cursor")
+
+    def once() -> SearchResult:
+        return _search_once(app, caller, account, query, mailboxes, limit, cursor,
+                            account_wide=account_wide, snippets=snippets)
+
+    result = once()
+    if not wait_for_match:
+        return result
+    start = _clock()
+    while not result.items:
+        remaining = wait_for_match - (_clock() - start)
+        if remaining <= 0:
+            break
+        _sleep(min(WAIT_FOR_MATCH_INTERVAL, remaining))
+        result = once()
+    waited = round(_clock() - start, 1)
+    if result.items:
+        note = (f"Matched after waiting {waited} s." if waited else
+                "Matched on the first search; no wait was needed.")
+    else:
+        note = (f"No match after waiting {waited} s. Bridge applies changes late, so this "
+                "is not proof the message does not exist; search again later or widen "
+                "the scope.")
+    return result.model_copy(update={"waited_seconds": waited,
+                                     "notes": [*result.notes, note]})
+
+
+def _search_once(app: MailApp, caller: CallerContext, account: str, query: SearchQuery,
+                 mailboxes: list[str] | None = None, limit: int = 50,
+                 cursor: str | None = None, *, account_wide: bool = False,
+                 snippets: bool = False) -> SearchResult:
     """Structured search. Default scope is INBOX only (disclosed in ``notes``);
     pass ``mailboxes`` to widen it, or ``account_wide`` for every mailbox the caller
     may read. A single mailbox pages newest first by UID. Over several mailboxes,

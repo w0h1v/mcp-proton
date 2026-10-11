@@ -125,10 +125,16 @@ def build(gw: Gateway) -> LocalProvider:
             description="Add a short excerpt of each result's body text, centred on the "
                         "first body/text term. Untrusted content; omitted when policy "
                         "does not release bodies.")] = False,
+        wait_for_match: Annotated[float, Field(
+            ge=0, le=messages.WAIT_FOR_MATCH_MAX,
+            description="Seconds to keep re-searching while nothing matches (first page "
+                        "only). Bridge applies new mail and moves some seconds late; use "
+                        "this when you expect a message that may not be visible yet.")] = 0,
     ) -> dict[str, Any]:
         return gw.read(lambda c: messages.search(app, c, account, query, mailboxes, limit,
                                                  cursor, account_wide=account_wide,
-                                                 snippets=snippets))
+                                                 snippets=snippets,
+                                                 wait_for_match=wait_for_match))
 
     @gw.tool(p, "messages_bulk_preview",
              "Preview a bulk change without applying it: occurrences per mailbox, a heuristic "
