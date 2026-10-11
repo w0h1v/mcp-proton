@@ -109,7 +109,7 @@ Each token maps to one client identity. `mcp-proton clients revoke hermes` takes
 |---|---|---|
 | Accounts | `accounts_list`, `accounts_health`, `accounts_capabilities` | Capability report per connected Bridge |
 | Mailboxes and labels | `mailboxes_*`, `labels_*` | Folders, labels, subscriptions, empty Trash/Spam from a snapshot |
-| Reading and search | `messages_list`, `messages_get`, `messages_search`, `conversations_get` | Reading never sets `\Seen` |
+| Reading and search | `messages_list`, `messages_get`, `messages_get_many`, `messages_search`, `conversations_get` | Reading never sets `\Seen` |
 | Organizing | `messages_set_flags`, `messages_move`, `_archive`, `_trash`, `_restore`, `_mark_spam`, `_not_spam` | Per-item results, no false atomicity |
 | Deletion | `messages_mark_deleted`, `messages_expunge` | Trash/Spam only, targeted UIDs only |
 | Drafts and sending | `drafts_*`, `mail_send`, `mail_reply`, `mail_forward`, `mail_reconcile` | Stable Message-ID; `delivery_unknown` is never resent |

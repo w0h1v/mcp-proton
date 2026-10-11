@@ -55,6 +55,10 @@ class FetchedMessage:
     header_only: bool = False
 
 
+# Search snippets read at most this much of a message's text part.
+PREVIEW_FETCH_BYTES = 4096
+
+
 @dataclass
 class MessageIdentity:
     """What grouping one message's occurrences needs, without the envelope."""
@@ -99,6 +103,8 @@ class MailStore(Protocol):
                         ) -> list[MessageSummary]: ...
     def fetch_identities(self, mailbox: str, uidvalidity: int, uids: list[int]
                          ) -> list[MessageIdentity]: ...
+    def fetch_text_previews(self, mailbox: str, uidvalidity: int, uids: list[int],
+                            max_bytes: int = PREVIEW_FETCH_BYTES) -> dict[int, str]: ...
     def fetch_message(self, mailbox: str, uidvalidity: int, uid: int,
                       header_only: bool = False) -> FetchedMessage: ...
     def fetch_flags(self, mailbox: str, uidvalidity: int, uids: list[int]

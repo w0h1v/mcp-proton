@@ -325,6 +325,47 @@ def test_account_wide_search_skips_mailboxes_policy_excludes(make_app, caller, s
     assert not any("All Mail" in n for n in res.notes)  # not searched, so not claimed
 
 
+def test_search_snippets_centre_on_the_body_term(app, caller, seed):
+    filler = "lorem ipsum " * 30
+    seed("INBOX", 1, subject="needle one", body=filler + "the PURPLE invoice is due " + filler)
+    seed("INBOX", 1, subject="needle two", body="Short note about nothing")
+    res = messages.search(app, caller, ACCOUNT, SearchQuery(subject="needle", body="purple"),
+                          snippets=True)
+    [item] = res.items
+    assert "PURPLE invoice is due" in item.snippet and item.snippet.startswith("…")
+    assert len(item.snippet) <= messages.SNIPPET_CHARS + 2
+    res = messages.search(app, caller, ACCOUNT, SearchQuery(subject="needle two"),
+                          snippets=True)
+    assert res.items[0].snippet == "Short note about nothing"
+    assert any("untrusted" in n for n in res.notes)
+    plain = messages.search(app, caller, ACCOUNT, SearchQuery(subject="needle two"))
+    assert plain.items[0].snippet is None
+
+
+def test_search_snippets_withheld_when_bodies_are_not_released(make_app, caller, seed):
+    app = make_app(Preset.AUTONOMOUS, constraints=Constraints(release_bodies=False))
+    from tests.services.conftest import make_raw
+
+    app.store(ACCOUNT).append("INBOX", make_raw(subject="needle", body="secret body"))
+    res = messages.search(app, caller, ACCOUNT, SearchQuery(subject="needle"), snippets=True)
+    assert res.items[0].snippet is None
+    assert any("omitted" in n for n in res.notes)
+
+
+def test_get_many_returns_each_message_or_its_error(app, caller, seed):
+    a, b = seed("INBOX", 2, body="x" * 5000)
+    gone = MessageHandle.parse(a).model_copy(update={"uid": 99999}).token()
+    items = messages.get_many(app, caller, [a, gone, b, a], max_body_chars=1000)
+    assert [i["handle"] for i in items] == [a, gone, b]  # duplicates read once
+    assert items[0]["message"].body.truncated and len(items[0]["message"].body.text) <= 1000
+    assert items[1]["error"]["code"] == "not_found"
+    assert "message" in items[2]
+    with pytest.raises(MailError):
+        messages.get_many(app, caller, [a] * (messages.GET_MANY_MAX + 1))
+    # never marks read
+    assert "\\Seen" not in items[0]["message"].flags
+
+
 # ------------------------------------------------------------------ flags
 
 
