@@ -18,10 +18,12 @@ from __future__ import annotations
 import hashlib
 import threading
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
+
+import anyio
 
 from ..bridge import mime
 from ..bridge.ports import PREVIEW_FETCH_BYTES, MailStore, MessageIdentity
@@ -313,28 +315,34 @@ GROUPED_SEARCH_MAX_OCCURRENCES = 5000
 # wait_for_match bounds and the pause between re-searches.
 WAIT_FOR_MATCH_MAX = 60
 WAIT_FOR_MATCH_INTERVAL = 2.0
-_sleep = time.sleep  # replaced in tests
+_sleep = anyio.sleep  # replaced in tests
 _clock = time.monotonic
 
 
 def search(app: MailApp, caller: CallerContext, account: str, query: SearchQuery,
            mailboxes: list[str] | None = None, limit: int = 50,
            cursor: str | None = None, *, account_wide: bool = False,
-           snippets: bool = False, wait_for_match: float = 0) -> SearchResult:
-    """Structured search; see :func:`_search_once`. With ``wait_for_match`` (seconds,
-    first page only) an empty result is retried until something matches or the time
-    runs out: Bridge applies changes some seconds late (All Mail lagged 10-25 s in
-    live runs), so an immediate miss is not a settled answer."""
+           snippets: bool = False) -> SearchResult:
+    """Structured search; see :func:`_search_once`."""
+    return _search_once(app, caller, account, query, mailboxes, limit, cursor,
+                        account_wide=account_wide, snippets=snippets)
+
+
+async def search_waiting(run_once: Callable[[], Awaitable[SearchResult]],
+                         wait_for_match: float, *, cursor: str | None = None
+                         ) -> SearchResult:
+    """Repeat an empty first-page search until something matches or
+    ``wait_for_match`` seconds pass: Bridge applies changes some seconds late (All
+    Mail lagged 10-25 s in live runs), so an immediate miss is not a settled answer.
+
+    ``run_once`` performs one blocking search off the event loop; the pauses between
+    attempts are asynchronous, so a waiting call holds no worker thread and stops
+    as soon as the client cancels it."""
     if not 0 <= wait_for_match <= WAIT_FOR_MATCH_MAX:
         raise invalid(f"wait_for_match must be between 0 and {WAIT_FOR_MATCH_MAX} seconds")
     if wait_for_match and cursor:
         raise invalid("wait_for_match applies to the first page only; omit the cursor")
-
-    def once() -> SearchResult:
-        return _search_once(app, caller, account, query, mailboxes, limit, cursor,
-                            account_wide=account_wide, snippets=snippets)
-
-    result = once()
+    result = await run_once()
     if not wait_for_match:
         return result
     start = _clock()
@@ -342,8 +350,8 @@ def search(app: MailApp, caller: CallerContext, account: str, query: SearchQuery
         remaining = wait_for_match - (_clock() - start)
         if remaining <= 0:
             break
-        _sleep(min(WAIT_FOR_MATCH_INTERVAL, remaining))
-        result = once()
+        await _sleep(min(WAIT_FOR_MATCH_INTERVAL, remaining))
+        result = await run_once()
     waited = round(_clock() - start, 1)
     if result.items:
         note = (f"Matched after waiting {waited} s." if waited else

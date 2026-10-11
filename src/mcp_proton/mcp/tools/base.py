@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime
 from email.utils import parseaddr
 from enum import StrEnum
@@ -236,6 +236,14 @@ class Gateway:
             return render(await anyio.to_thread.run_sync(fn, caller))
         except Exception as exc:
             raise (self.resource_error(exc) if resource else self.tool_error(exc)) from exc
+
+    async def aread_async(self, fn: Callable[[CallerContext], Awaitable[Any]]) -> Any:
+        """A read that awaits (for example between polls) under the caller's identity;
+        ``fn`` offloads its own blocking work."""
+        try:
+            return render(await fn(self.identity.caller()))
+        except Exception as exc:
+            raise self.tool_error(exc) from exc
 
     async def write(self, ctx: Context, fn: Callable[[CallerContext], OperationOutcome]
                     ) -> WriteResult:  # type: ignore[valid-type]  # alias over a FastMCP type

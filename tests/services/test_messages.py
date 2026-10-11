@@ -371,7 +371,7 @@ def fake_time(monkeypatch):
     """Fake clock: sleeping advances it; ``on_sleep`` runs a callback per sleep."""
     state = {"now": 0.0, "sleeps": [], "on_sleep": None}
 
-    def sleep(seconds):
+    async def sleep(seconds):
         state["sleeps"].append(seconds)
         state["now"] += seconds
         if state["on_sleep"]:
@@ -382,44 +382,65 @@ def fake_time(monkeypatch):
     return state
 
 
-def test_wait_for_match_finds_a_late_message(app, caller, seed, fake_time):
+def _waiting(app, caller, query, wait, cursor=None, **kw):
+    async def once():
+        return messages.search(app, caller, ACCOUNT, query, cursor=cursor, **kw)
+    return messages.search_waiting(once, wait, cursor=cursor)
+
+
+async def test_wait_for_match_finds_a_late_message(app, caller, seed, fake_time):
     def arrive(n):
         if n == 3:  # visible only after the third pause
             seed("INBOX", 1, subject="late arrival")
 
     fake_time["on_sleep"] = arrive
-    res = messages.search(app, caller, ACCOUNT, SearchQuery(subject="late arrival"),
-                          wait_for_match=30)
+    res = await _waiting(app, caller, SearchQuery(subject="late arrival"), 30)
     assert [i.subject for i in res.items] == ["late arrival"]
     assert res.waited_seconds == 6.0 and fake_time["sleeps"] == [2.0, 2.0, 2.0]
     assert any("Matched after waiting 6.0 s" in n for n in res.notes)
 
 
-def test_wait_for_match_gives_up_without_claiming_absence(app, caller, fake_time):
-    res = messages.search(app, caller, ACCOUNT, SearchQuery(subject="never"),
-                          wait_for_match=5)
+async def test_wait_for_match_gives_up_without_claiming_absence(app, caller, fake_time):
+    res = await _waiting(app, caller, SearchQuery(subject="never"), 5)
     assert res.items == [] and res.waited_seconds == 5.0
     assert fake_time["sleeps"] == [2.0, 2.0, 1.0]  # never sleeps past the limit
     assert any("not proof" in n for n in res.notes)
 
 
-def test_wait_for_match_does_not_wait_when_something_matches(app, caller, seed, fake_time):
+async def test_wait_for_match_does_not_wait_when_something_matches(app, caller, seed,
+                                                                  fake_time):
     seed("INBOX", 1, subject="already here")
-    res = messages.search(app, caller, ACCOUNT, SearchQuery(subject="already here"),
-                          wait_for_match=30)
+    res = await _waiting(app, caller, SearchQuery(subject="already here"), 30)
     assert res.items and fake_time["sleeps"] == [] and res.waited_seconds == 0
-    plain = messages.search(app, caller, ACCOUNT, SearchQuery(subject="already here"))
+    plain = await _waiting(app, caller, SearchQuery(subject="already here"), 0)
     assert plain.waited_seconds is None
 
 
-def test_wait_for_match_validation(app, caller, seed):
+async def test_wait_for_match_validation(app, caller, seed):
     seed("INBOX", 3, subject="needle")
     first = messages.search(app, caller, ACCOUNT, SearchQuery(subject="needle"), limit=1)
-    for kw in ({"wait_for_match": 61}, {"wait_for_match": -1},
-               {"wait_for_match": 5, "cursor": first.next_cursor}):
+    for wait, cursor in ((61, None), (-1, None), (5, first.next_cursor)):
         with pytest.raises(MailError) as e:
-            messages.search(app, caller, ACCOUNT, SearchQuery(subject="needle"), **kw)
+            await _waiting(app, caller, SearchQuery(subject="needle"), wait, cursor=cursor)
         assert e.value.code is ErrorCode.INVALID_REQUEST
+
+
+async def test_waiting_search_runs_searches_off_the_event_loop(app, caller, monkeypatch):
+    """Only the search attempts use worker threads; the pauses do not."""
+    import threading
+
+    import anyio
+
+    main = threading.get_ident()
+    threads: list[int] = []
+
+    def once_sync():
+        threads.append(threading.get_ident())
+        return messages.search(app, caller, ACCOUNT, SearchQuery(subject="never"))
+
+    monkeypatch.setattr(messages, "WAIT_FOR_MATCH_INTERVAL", 0.01)
+    res = await messages.search_waiting(lambda: anyio.to_thread.run_sync(once_sync), 0.05)
+    assert res.items == [] and len(threads) >= 2 and main not in threads
 
 
 # ------------------------------------------------------------------ flags

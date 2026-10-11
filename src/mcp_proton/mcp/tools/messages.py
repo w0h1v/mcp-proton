@@ -2,8 +2,10 @@
 
 import base64
 import hashlib
+from collections.abc import Awaitable
 from typing import Annotated, Any, Literal
 
+import anyio.to_thread
 from fastmcp import Context
 from fastmcp.server.providers import LocalProvider
 from pydantic import Field
@@ -112,7 +114,7 @@ def build(gw: Gateway) -> LocalProvider:
              "account_wide is given. Over several mailboxes each item is one message, with "
              "occurrences listing every mailbox it is in. Completeness is always reported "
              "as unknown.", title="Search messages")
-    def messages_search(
+    async def messages_search(
         account: AccountParam, query: SearchQuery,
         mailboxes: Annotated[list[str] | None, Field(
             max_length=50, description="Mailboxes to search; default INBOX only.")] = None,
@@ -131,10 +133,14 @@ def build(gw: Gateway) -> LocalProvider:
                         "only). Bridge applies new mail and moves some seconds late; use "
                         "this when you expect a message that may not be visible yet.")] = 0,
     ) -> dict[str, Any]:
-        return gw.read(lambda c: messages.search(app, c, account, query, mailboxes, limit,
-                                                 cursor, account_wide=account_wide,
-                                                 snippets=snippets,
-                                                 wait_for_match=wait_for_match))
+        async def run(c: Any) -> Any:
+            def once() -> Awaitable[Any]:
+                return anyio.to_thread.run_sync(lambda: messages.search(
+                    app, c, account, query, mailboxes, limit, cursor,
+                    account_wide=account_wide, snippets=snippets))
+            return await messages.search_waiting(once, wait_for_match, cursor=cursor)
+
+        return await gw.aread_async(run)
 
     @gw.tool(p, "messages_bulk_preview",
              "Preview a bulk change without applying it: occurrences per mailbox, a heuristic "
