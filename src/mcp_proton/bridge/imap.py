@@ -169,7 +169,9 @@ def search_notes(query: SearchQuery) -> list[str]:
     if any(q.since or q.before for q in found):
         notes.append("SINCE/BEFORE use day granularity (time of day is ignored by IMAP).")
     if any(q.body or q.text for q in found):
-        notes.append("Body/text search depends on Bridge's local index and may be incomplete.")
+        notes.append("Proton Bridge matches body and text searches against the raw "
+                     "message, so words inside base64 or quoted-printable parts can be "
+                     "missed.")
     if query.has_attachment_filter():
         notes.append("Attachment filters were applied after the IMAP search from each "
                      "message's MIME structure; attachment contents are not searched.")
@@ -254,6 +256,40 @@ def _header_field(item: dict[bytes, Any], name: str) -> str | None:
 
 def _provider_id(item: dict[bytes, Any]) -> str | None:
     return _header_field(item, PROVIDER_ID_HEADER)
+
+
+# Header-text criteria Bridge matches against the raw header (see
+# ImapMailStore._recheck_encoded_headers), keyed by SearchQuery attribute.
+_TEXT_FIELDS = {"from_": "from", "to": "to", "cc": "cc", "bcc": "bcc", "subject": "subject"}
+_ENVELOPE_ADDRESS_FIELDS = {"from": "from_", "to": "to", "cc": "cc", "bcc": "bcc"}
+# Past this many messages with encoded headers, header-text matches are not rechecked.
+ENCODED_RECHECK_MAX = 5000
+
+
+def _node_text_terms(node: SearchQuery) -> dict[str, str]:
+    """This node's own header-text criteria as {lower-case header name: term}."""
+    terms = {name: getattr(node, attr) for attr, name in _TEXT_FIELDS.items()
+             if getattr(node, attr) is not None}
+    terms.update({k.lower(): v for k, v in (node.header or {}).items()})
+    return terms
+
+
+def _header_text_fields(query: SearchQuery) -> set[str]:
+    """Every header name the query matches text in, anywhere in the tree."""
+    fields = set(_node_text_terms(query))
+    for sub in query.any_of or []:
+        fields |= _header_text_fields(sub)
+    if query.not_ is not None:
+        fields |= _header_text_fields(query.not_)
+    return fields
+
+
+def _non_text_part(node: SearchQuery) -> SearchQuery | None:
+    """This node's own criteria other than header text (None when it has none)."""
+    rest = node.model_copy(update={
+        **dict.fromkeys(_TEXT_FIELDS), "header": None, "any_of": None, "not_": None,
+        "has_attachment": None, "attachment_name": None, "attachment_type": None})
+    return rest if build_search_criteria(rest) else None
 
 
 def _check_flag(flag: str, *, allow_system: bool = True) -> None:
@@ -984,10 +1020,103 @@ class ImapMailStore:
         return self._exec(run, retry=True, what="search")
 
     def search(self, mailbox: str, query: SearchQuery) -> tuple[int, list[int], list[str]]:
-        uidvalidity, uids = self.list_uids(mailbox, build_search_criteria(query) or None)
+        uidvalidity, uids = self._server_search(mailbox, query)
+        notes = search_notes(query)
+        if _header_text_fields(query):
+            uids, note = self._recheck_encoded_headers(mailbox, uidvalidity, uids, query)
+            if note:
+                notes.append(note)
         if query.has_attachment_filter():
             uids = self._filter_attachments(mailbox, uidvalidity, uids, query)
-        return uidvalidity, uids, search_notes(query)
+        return uidvalidity, uids, notes
+
+    def _server_search(self, mailbox: str, query: SearchQuery) -> tuple[int, list[int]]:
+        return self.list_uids(mailbox, build_search_criteria(query) or None)
+
+    def _recheck_encoded_headers(self, mailbox: str, uidvalidity: int, uids: list[int],
+                                 query: SearchQuery) -> tuple[list[int], str | None]:
+        """Correct header-text matches for messages whose headers are RFC 2047 encoded.
+
+        Proton Bridge (Gluon) matches FROM/TO/CC/BCC/SUBJECT/HEADER as a substring of
+        the raw header, so an encoded header (=?utf-8?...?=) is not searchable by its
+        text. For headers that are not encoded the raw text is the text, so the
+        server's answer stands. The messages with an encoded header among the fields
+        the query uses are found with HEADER <field> "=?" (which raw matching handles),
+        and for those alone the query is evaluated here against the decoded headers;
+        every other criterion still comes from the server. Correct on servers that
+        decode, too: the recheck only replaces the server's answer with an exact one.
+        """
+        fields = sorted(_header_text_fields(query))
+        probe = [SearchQuery(header={f: "=?"}) for f in fields]
+        _, encoded_uids = self._server_search(
+            mailbox, probe[0] if len(probe) == 1 else SearchQuery(any_of=probe))
+        encoded = set(encoded_uids)
+        root_rest = _non_text_part(query)
+        server_sets: dict[int, set[int] | None] = {}
+
+        def server_set(node: SearchQuery) -> set[int] | None:
+            if id(node) not in server_sets:
+                rest = _non_text_part(node)
+                server_sets[id(node)] = (set(self._server_search(mailbox, rest)[1])
+                                         if rest is not None else None)
+            return server_sets[id(node)]
+
+        if root_rest is not None:
+            encoded &= server_set(query) or set()
+        if not encoded:
+            return uids, None
+        if len(encoded) > ENCODED_RECHECK_MAX:
+            return uids, (f"{len(encoded)} messages have encoded headers, more than the "
+                          f"{ENCODED_RECHECK_MAX} that can be rechecked; header-text "
+                          "matches among them may be missing.")
+        decoded = self._decoded_header_fields(mailbox, uidvalidity, sorted(encoded), fields)
+
+        def matches(node: SearchQuery, uid: int) -> bool:
+            values = decoded.get(uid, {})
+            for field, term in _node_text_terms(node).items():
+                if term.casefold() not in values.get(field, "").casefold():
+                    return False
+            rest = server_set(node)
+            if rest is not None and uid not in rest:
+                return False
+            if node.any_of and not any(matches(sub, uid) for sub in node.any_of):
+                return False
+            return not (node.not_ is not None and matches(node.not_, uid))
+
+        corrected = {u for u in uids if u not in encoded}
+        corrected |= {u for u in encoded if u in decoded and matches(query, u)}
+        return sorted(corrected), (
+            f"Header-text matches were rechecked against the decoded headers of "
+            f"{len(encoded)} message(s) whose headers are encoded.")
+
+    def _decoded_header_fields(self, mailbox: str, uidvalidity: int, uids: list[int],
+                               fields: list[str]) -> dict[int, dict[str, str]]:
+        """Decoded text of the given header fields (lower-case names) per UID."""
+        names = " ".join(f.upper() for f in fields)
+        section = f"BODY.PEEK[HEADER.FIELDS ({names})]"
+
+        def run(conn: _Conn) -> dict[int, dict[bytes, Any]]:
+            self._open(conn, mailbox, uidvalidity, write=False)
+            data: dict[int, dict[bytes, Any]] = {}
+            for chunk in _chunks(list(uids)):
+                data.update(self._fetch_present(conn, chunk, ["ENVELOPE", section]))
+            return data
+
+        out: dict[int, dict[str, str]] = {}
+        for uid, item in self._exec(run, retry=True, what="fetch").items():
+            env = item.get(b"ENVELOPE")
+            values: dict[str, str] = {}
+            for field in fields:
+                if env is not None and field in _ENVELOPE_ADDRESS_FIELDS:
+                    addrs = _addresses(getattr(env, _ENVELOPE_ADDRESS_FIELDS[field]))
+                    values[field] = ", ".join(
+                        f"{a.name} <{a.email}>" if a.name else a.email for a in addrs)
+                elif env is not None and field == "subject":
+                    values[field] = _decode_header_text(env.subject) or ""
+                else:
+                    values[field] = _decode_header_text(_header_field(item, field)) or ""
+            out[uid] = values
+        return out
 
     def _filter_attachments(self, mailbox: str, uidvalidity: int, uids: list[int],
                             query: SearchQuery) -> list[int]:
