@@ -8,7 +8,7 @@ This roadmap follows the phased delivery in `docs/design.md`. Phases control rel
 - **Released: 0.1.0a1** (2026-10-11), a GitHub pre-release with a wheel, source archive and SBOM. It is not on PyPI.
 - **Live testing so far:** one Proton Mail Bridge 03.27.01 account on macOS. The full compatibility probe passed, and one policy-governed send went through owner approval. See "Observed Bridge behaviour" in `docs/compatibility.md`.
 - **Not yet tested live:** replies, forwards, recipient-side delivery, other Bridge versions, Linux and Windows, and the `metadata` and `index` storage modes.
-- The packaged evidence file (`src/mcp_proton/compatibility.json`) is still empty, so every operation reports `unverified` until an owner records their own probe results.
+- The packaged evidence file (`src/mcp_proton/compatibility.json`) is still empty, so implemented operations whose prerequisites Bridge advertises report `unverified` until an owner records their own probe results. Operations that are not implemented, or whose prerequisites (such as `MOVE` or `UIDPLUS`) are missing, report `unavailable`.
 - **License: Apache-2.0.** Runtime dependencies are Apache-2.0, MIT or BSD-3-Clause (checked 2026-10-09).
 
 ## Phases
