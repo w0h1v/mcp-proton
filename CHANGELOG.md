@@ -31,3 +31,4 @@ Not released. Implemented and tested against fake IMAP/SMTP servers only; not ye
 - `messages_get_many` reads up to 20 messages in one call, each with its own result or error.
 - `messages_search` takes `snippets` to add a short excerpt of each result's body, centred on the first body/text term. It reads only the first 4 KB of each message's text part, and is omitted when policy does not release bodies.
 - `messages_search` takes `wait_for_match` (0-60 s): while nothing matches, the first page is searched again every 2 s. The result reports `waited_seconds`, and a miss after the full wait is labelled as not proof of absence, since Bridge applies changes late.
+- The probe's non-ASCII search cases use an RFC 2047 encoded subject, as real mail does; a raw 8-bit subject is checked for information only, and the subjects Bridge reads back are recorded.

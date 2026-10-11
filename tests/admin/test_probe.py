@@ -29,8 +29,13 @@ def test_probe_runs_and_cleans_up(imap_server, tmp_path):
     ops = {r.operation for r in ROWS}
     assert {o.operation for o in report.observations} <= ops
     search = by["search"].observed
-    assert set(search) == {"or", "not", "nested", "non_ascii_in_or"}
-    assert all(c["ok"] and c["matches_expected"] for c in search.values()), search
+    required = {"or", "not", "nested", "non_ascii_subject", "non_ascii_in_or"}
+    assert required | {"raw_8bit_subject", "subjects_as_read_back"} == set(search)
+    assert all(search[n]["ok"] and search[n]["matches_expected"] for n in required), search
+    assert search["raw_8bit_subject"]["informational"] is True
+    # the encoded subject is decoded on read back; the raw one is recorded as returned
+    assert search["subjects_as_read_back"]["gamma_rfc2047"].endswith("h\u00e9llo")
+    assert "delta_raw_8bit" in search["subjects_as_read_back"]
     path = tmp_path / "compatibility.json"
     n = probe.record_evidence(report, path, "test")
     data = json.loads(path.read_text())
@@ -366,3 +371,27 @@ def test_failed_search_case_is_an_error_observation(imap_server, monkeypatch):
     finally:
         store.close()
 
+
+
+def test_raw_8bit_search_failure_is_informational(imap_server, monkeypatch):
+    """Only the encoded (real-mail) form decides the step; a server that cannot match
+    the raw 8-bit form still passes, with the miss recorded."""
+    acct = _acct(imap_server)
+    store = open_store(acct)
+    try:
+        store.create_mailbox("Folders/x")
+        prober = probe.Prober(acct, store, log=lambda _: None, pace=0, all_mail_wait=0)
+        prober.folder = "Folders/x"
+        real = store.search
+
+        def search(mailbox, query):
+            if query.subject == "w\u00f6rld":
+                return real(mailbox, query.model_copy(update={"subject": "no-such"}))
+            return real(mailbox, query)
+
+        monkeypatch.setattr(store, "search", search)
+        out = prober.probe_search()
+        assert out["raw_8bit_subject"]["matches_expected"] is False
+        assert out["non_ascii_subject"]["matches_expected"] is True
+    finally:
+        store.close()
