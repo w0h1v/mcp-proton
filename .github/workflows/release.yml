@@ -56,9 +56,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          unzip -l dist/*.whl | grep -q 'licenses/LICENSE'
-          tar tzf dist/*.tar.gz | grep -q '/LICENSE$'
-          ! tar tzf dist/*.tar.gz | grep -E '\.(sqlite3|db|env)$|/\.venv/'
+          # List each archive once, then grep the saved listing: `cmd | grep -q`
+          # under pipefail fails when grep exits early and cmd gets SIGPIPE.
+          wheel_files=$(unzip -l dist/*.whl)
+          sdist_files=$(tar tzf dist/*.tar.gz)
+          grep -q 'licenses/LICENSE' <<<"$wheel_files"
+          grep -q '/LICENSE$' <<<"$sdist_files"
+          ! grep -E '\.(sqlite3|db|env)$|/\.venv/' <<<"$sdist_files"
       - name: Software bill of materials
         run: |
           uvx --from cyclonedx-bom cyclonedx-py environment --of JSON -o dist/sbom.cdx.json || \
