@@ -130,7 +130,8 @@ A common setup keeps an agent on the Reader preset but lets it answer mail with 
    mcp-proton policy set send ask --client <agent> --account <account>
    mcp-proton policy constraints set --client <agent> --allowed-accounts <account> \
        --allowed-recipients <address-or-@domain> --max-sends-per-day <n>
-   mcp-proton policy show --client <agent> --json   # confirm: send = ask, everything else unchanged
+   mcp-proton policy show --client <agent> --json   # confirm: send = ask, everything else unchanged,
+                                                    # and client_constraints as set
    ```
 
 2. In the MCP client's tool allow-list, add only `mail_reply`, `mail_reconcile`, `operations_status`, `operations_resume` and `operations_cancel`. Leave `mail_send`, `mail_forward` and `drafts_send` out unless you want them separately; enabling reply should never enable them as a side effect.
@@ -144,6 +145,9 @@ The flow is then:
 4. You review and approve that exact request: `mcp-proton approvals show <operation_id>`, then `mcp-proton approvals approve <operation_id>`.
 5. The agent calls `operations_resume` with that `operation_id`. Any change to the content or recipients needs a new request and a new approval.
 6. If the result is `delivery_unknown`, do not resend. Check `operations_status` and `mail_reconcile`, and look in Sent. Not finding the message in Sent does not prove it was not delivered.
+7. A successful send can report no Sent copy yet: Bridge files the copy in Sent a little later. Call `mail_reconcile` to confirm it; it searches Sent by Message-ID and never resends.
+
+The copy in Sent can contain more than the request did. With Proton's "attach public key" setting on, Proton adds your public key as an attachment. mcp-proton never attaches keys itself.
 
 **Policy only governs calls made through mcp-proton.** In a personal local deployment an agent that can run shell commands and read the Bridge password can send mail directly over SMTP and bypass all of this. If that must be impossible rather than merely against the rules, use the isolated service deployment above, so the agent never has access to the Bridge credentials.
 

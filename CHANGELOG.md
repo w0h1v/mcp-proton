@@ -2,9 +2,9 @@
 
 All notable changes are recorded here. The project follows semantic versioning from 1.0; before that, tool schemas, preset membership and storage formats may change between alpha releases, and each change will be listed here.
 
-## Unreleased — 0.1.0a1
+## 0.1.0a1 — 2026-10-11
 
-Not released. Implemented and tested against fake IMAP/SMTP servers only; not yet verified against a live Proton Mail Bridge.
+First alpha. Tested against fake IMAP/SMTP servers and on one live Proton Mail Bridge 03.27.01 account (macOS): the full compatibility probe (mailboxes, flags, labels, moves, expunge, trash, identity, import dates, search, drafts, folder delete, IDLE) and one policy-governed send with owner approval. Not yet exercised live: the reply path, recipient-side delivery, other Bridge versions. Known limit: Bridge matches body and text searches against the raw message, so words inside encoded parts can be missed. See docs/compatibility.md.
 
 ### Added
 - Licensed under Apache-2.0.
@@ -33,3 +33,4 @@ Not released. Implemented and tested against fake IMAP/SMTP servers only; not ye
 - `messages_search` takes `wait_for_match` (0-60 s): while nothing matches, the first page is searched again every 2 s. The result reports `waited_seconds`, and a miss after the full wait is labelled as not proof of absence, since Bridge applies changes late.
 - The probe's non-ASCII search cases use an RFC 2047 encoded subject, as real mail does; a raw 8-bit subject is checked for information only, and the subjects Bridge reads back are recorded.
 - Header-text searches (from, to, cc, bcc, subject, header) find messages whose headers are RFC 2047 encoded. Proton Bridge matches the raw header, so these were missed, including ASCII words in subjects that senders had encoded; such messages are now rechecked against their decoded headers. Body and text searches note that Bridge can miss words inside base64 or quoted-printable parts.
+- `policy show --client <id>` shows that client's own constraints, review channel and revoked state alongside the global constraints.
