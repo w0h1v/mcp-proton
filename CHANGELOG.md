@@ -2,6 +2,15 @@
 
 All notable changes are recorded here. The project follows semantic versioning from 1.0; before that, tool schemas, preset membership and storage formats may change between pre-1.0 releases, and each change will be listed here.
 
+## Unreleased
+
+### Security
+Fixes from an automated security review of 0.2.0b1.
+- `mail_reply` with a quote, and `mail_forward`, copy the original's content into the new message, so they now honour `release_bodies` (and `release_attachments` when forwarding as an attachment). Before, they bypassed both. A reply with `quote=false` still works when bodies are restricted.
+- `drafts_discard` deletes a draft permanently, so it now also needs the permanent-deletion permission. Under the Assistant preset it asks for approval instead of running at once.
+- `events_reconcile` without a mailbox, and `events_watch_status`, now cover only the watched mailboxes the caller may read; before, a client limited by `allowed_mailboxes` could reconcile, and see the names and activity of, every watched mailbox.
+- `accounts_list` no longer shows a paused account to a client whose allowed accounts exclude it.
+
 ## 0.2.0b1 — 2026-10-12
 
 First beta. The feature set in the design is complete and has been exercised on a live Proton Mail Bridge; tool schemas and storage formats may still change before 1.0. No code changes since 0.1.0a1.

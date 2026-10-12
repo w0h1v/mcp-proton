@@ -270,3 +270,33 @@ def test_watcher_survives_bridge_errors(app):
         assert _wait_for(lambda: Reconciler(app).load_state(ACCOUNT, "INBOX") is not None)
     finally:
         watcher.stop()
+
+
+def test_whole_scope_reconcile_and_status_respect_mailbox_constraints(make_app, caller, seed):
+    from mcp_proton.policy.model import Constraints
+
+    app = make_app(constraints=Constraints(allowed_mailboxes={ACCOUNT: ["INBOX"]}))
+    app.config.watch.mailboxes = ["INBOX", "Archive"]
+    seen: list[str] = []
+    real = Reconciler.reconcile
+
+    def spy(self, account, mailbox):
+        seen.append(mailbox)
+        return real(self, account, mailbox)
+
+    Reconciler.reconcile = spy
+    try:
+        out = reconcile_now(app, caller, ACCOUNT)
+    finally:
+        Reconciler.reconcile = real
+    assert seen == ["INBOX"]
+    assert [r["mailbox"] for r in out["reports"]] == ["INBOX"]
+    status = watch_status(app, caller, ACCOUNT)
+    assert "Archive" not in json.dumps(status)
+    assert status["scope"] == ["INBOX"] and status["watch_mailboxes"] == ["INBOX"]
+
+
+def test_whole_scope_reconcile_unrestricted_covers_everything(app, caller):
+    app.config.watch.mailboxes = ["INBOX", "Archive"]
+    out = reconcile_now(app, caller, ACCOUNT)
+    assert [r["mailbox"] for r in out["reports"]] == ["INBOX", "Archive"]

@@ -356,3 +356,35 @@ def test_reconcile_rejects_non_send_operation(app, caller):
     with pytest.raises(MailError) as e:
         sending.reconcile(app, caller, created.operation_id)
     assert e.value.code is ErrorCode.INVALID_REQUEST
+
+
+def _restricted(make_app, tmp_path, **flags):
+    return make_app(Preset.ASSISTANT, constraints=constraints(tmp_path, **flags))
+
+
+def test_quoted_reply_refused_when_bodies_not_released(make_app, caller, tmp_path):
+    app = _restricted(make_app, tmp_path, release_bodies=False)
+    r = app.store(ACCOUNT).append("INBOX", make_raw(body="secret 123"))
+    h = MessageHandle(account=ACCOUNT, mailbox="INBOX", uidvalidity=r.uidvalidity,
+                      uid=r.uid).token()
+    with pytest.raises(MailError) as e:
+        sending.reply(app, caller, h, text="ok")
+    assert e.value.code is ErrorCode.CONSTRAINT_VIOLATION and "quote=false" in e.value.message
+    o = sending.reply(app, caller, h, text="ok", quote=False)  # no original content leaves
+    assert "secret" not in o.model_dump_json()
+
+
+@pytest.mark.parametrize(("flags", "as_attachment"), [
+    ({"release_bodies": False}, False),
+    ({"release_bodies": False}, True),
+    ({"release_attachments": False}, True),
+])
+def test_forward_refused_when_content_not_released(make_app, caller, tmp_path, flags,
+                                                   as_attachment):
+    app = _restricted(make_app, tmp_path, **flags)
+    r = app.store(ACCOUNT).append("INBOX", make_raw(body="secret 123"))
+    h = MessageHandle(account=ACCOUNT, mailbox="INBOX", uidvalidity=r.uidvalidity,
+                      uid=r.uid).token()
+    with pytest.raises(MailError) as e:
+        sending.forward(app, caller, h, to=["bob@example.com"], as_attachment=as_attachment)
+    assert e.value.code is ErrorCode.CONSTRAINT_VIOLATION

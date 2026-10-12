@@ -352,7 +352,9 @@ def discard_draft(app: MailApp, caller: CallerContext, handle: str,
     plan = effects.plan(effects.DomainOp.DRAFT_DISCARD, app.store(h.account).role_of(h.mailbox))
     req = OperationRequest(
         kind=KIND_DISCARD, family=plan.family, account=h.account, mailboxes=[h.mailbox],
-        targets=[h], payload={"handle": h.token(), "effects": [e.value for e in plan.effects]},
+        targets=[h], payload={"handle": h.token(), "effects": [e.value for e in plan.effects],
+                              # destroying a draft is a permanent deletion too
+                              "_also_families": sorted(f.value for f in plan.also_families)},
         summary="Discard draft (permanent)", idempotency_key=idempotency_key,
     )
     return app.run(caller, req)
@@ -362,7 +364,11 @@ def discard_draft(app: MailApp, caller: CallerContext, handle: str,
 def _exec_discard(app: MailApp, rec: OperationRecord) -> ExecResult:
     h = MessageHandle.parse(rec.request.payload["handle"])
     store = app.store(h.account)
-    effects.plan(effects.DomainOp.DRAFT_DISCARD, store.role_of(h.mailbox))  # role may have changed
+    # the mailbox's role may have changed since the request
+    plan = effects.plan(effects.DomainOp.DRAFT_DISCARD, store.role_of(h.mailbox))
+    if rec.request.payload.get("_also_families", []) != sorted(f.value for f in plan.also_families):
+        raise MailError(ErrorCode.CONFLICT, "the approved request no longer matches the "
+                        "policy families for discarding a draft; request it again")
     if h.uid not in store.fetch_flags(h.mailbox, h.uidvalidity, [h.uid]):
         return ExecResult(OperationStatus.SUCCEEDED, {"removed": False, "already_gone": True},
                           [ItemResult(target=h.token(), status="skipped",

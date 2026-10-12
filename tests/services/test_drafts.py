@@ -285,3 +285,23 @@ def test_prepare_outgoing_strips_bcc_including_folded_lines():
     assert b"one@x.test" not in head and b"two@x.test" not in head
     assert b"Message-ID: <new@x.test>" in head and b"2024" not in head
     assert body == b"Bcc: not a header\r\n"
+
+
+def test_discard_needs_permanent_delete_approval(make_app, caller):
+    """Discarding destroys the draft, so Assistant (drafts Allow, permanent delete Ask)
+    must ask, and the draft stays until approved."""
+    app = make_app(Preset.ASSISTANT)
+    h = create(app, caller)
+    o = drafts.discard_draft(app, caller, h)
+    assert o.status is OperationStatus.PENDING
+    assert drafts_uids(app) == [MessageHandle.parse(h).uid]
+
+
+def test_discard_denied_when_permanent_delete_denied(make_app, caller):
+    app = make_app(Preset.AUTONOMOUS, rules=[
+        PolicyRule(family=OperationFamily.PERMANENT_DELETE, action=Action.DENY)])
+    h = create(app, caller)
+    with pytest.raises(MailError) as e:
+        drafts.discard_draft(app, caller, h)
+    assert e.value.code is ErrorCode.POLICY_DENIED
+    assert drafts_uids(app) == [MessageHandle.parse(h).uid]

@@ -112,13 +112,23 @@ def _as_addresses(values: Sequence[Address | str] | None) -> list[Address]:
     return out
 
 
-def _load_message(app: MailApp, caller: CallerContext, handle: str
+def _load_message(app: MailApp, caller: CallerContext, handle: str, *,
+                  bodies: bool = False, attachments: bool = False,
+                  purpose: str = "this operation"
                   ) -> tuple[MessageHandle, bytes, Message]:
+    """Fetch the original for a reply or forward. ``bodies``/``attachments`` say
+    which content will leave in the new message; each needs the matching release
+    constraint, checked before anything is fetched."""
     h = MessageHandle.parse(handle)
     app.config.account(h.account)
     app.authorize_read(caller, h.account, [h.mailbox])
+    for needed, flag in ((bodies, "release_bodies"), (attachments, "release_attachments")):
+        if needed and not att.constraint_flag(app, caller, flag):
+            raise MailError(ErrorCode.CONSTRAINT_VIOLATION,
+                            f"{purpose} copies message content, which the owner restricts "
+                            f"({flag} is off)")
     fetched = app.store(h.account).fetch_message(h.mailbox, h.uidvalidity, h.uid)
-    msg = mime.parse_message(fetched, h, include_headers=False, include_body=True,
+    msg = mime.parse_message(fetched, h, include_headers=False, include_body=bodies,
                              max_body_chars=app.config.max_body_chars)
     return h, fetched.raw, msg
 
@@ -181,7 +191,9 @@ def reply(app: MailApp, caller: CallerContext, handle: str, text: str | None = N
     """Reply (or reply-all) to a message. Own addresses are never recipients."""
     if not (text or html):
         raise invalid("a reply needs a text or html body")
-    h, _raw, orig = _load_message(app, caller, handle)
+    quoting = quote and text is not None
+    h, _raw, orig = _load_message(app, caller, handle, bodies=quoting,
+                                  purpose="a quoted reply (use quote=false to reply without it)")
     account = app.config.account(h.account)
     selfs = {account.address.lower(), *(i.lower() for i in account.identities)}
     to, cc = mime.reply_recipients(orig, selfs, reply_all)
@@ -192,7 +204,7 @@ def reply(app: MailApp, caller: CallerContext, handle: str, text: str | None = N
     from_addr = Address(email=addressed[0].email) if addressed else None
     in_reply_to, refs = mime.reply_headers(orig)
     body = text
-    if quote and text is not None and orig.body is not None:
+    if quoting and orig.body is not None:
         body = f"{text}\n\n{mime.quote_text(orig)}"
     out = OutgoingMessage.model_validate({
         "account": h.account, "from": from_addr, "to": to, "cc": cc,
@@ -210,7 +222,8 @@ def forward(app: MailApp, caller: CallerContext, handle: str, to: Sequence[Addre
             idempotency_key: str | None = None) -> OperationOutcome:
     """Forward inline (header block + body; the original's attachments are not
     copied) or as an attached ``message/rfc822``."""
-    h, raw, orig = _load_message(app, caller, handle)
+    h, raw, orig = _load_message(app, caller, handle, bodies=True, attachments=as_attachment,
+                                 purpose="forwarding")
     forward_ref: dict[str, Any] | None = None
     if as_attachment:
         limit = att.max_attachment_bytes(app, caller)

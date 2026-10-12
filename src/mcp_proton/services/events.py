@@ -592,9 +592,32 @@ def reconcile_now(app: MailApp, caller: CallerContext, account: str,
         mailbox = canonical_mailbox(app, account, mailbox)
     app.authorize_read(caller, account, [mailbox] if mailbox else None, kind=KIND_RECONCILE)
     rec = _reconciler(app)
-    reports = [rec.reconcile(account, mailbox)] if mailbox else rec.reconcile_all(account)
+    if mailbox:
+        reports = [rec.reconcile(account, mailbox)]
+    else:
+        # An account-level check says nothing about mailbox constraints: reconcile only
+        # the watched mailboxes this caller may read, and the mailbox list only when
+        # it may read all of them.
+        scope = rec.watch_scope(account)
+        visible = _readable_mailboxes(app, caller, account, scope, KIND_RECONCILE)
+        if len(visible) == len(scope):
+            reports = rec.reconcile_all(account)
+        else:
+            reports = [rec.reconcile_safely(account, mb) for mb in visible]
     return {"account": account, "reports": [r.to_dict() for r in reports],
             "events": sum(r.events for r in reports)}
+
+
+def _readable_mailboxes(app: MailApp, caller: CallerContext, account: str,
+                        mailboxes: list[str], kind: str) -> list[str]:
+    out = []
+    for mb in mailboxes:
+        try:
+            app.authorize_read(caller, account, [mb], kind=kind)
+        except MailError:
+            continue
+        out.append(mb)
+    return out
 
 
 def _reconciler(app: MailApp) -> Reconciler:
@@ -612,6 +635,13 @@ def watch_status(app: MailApp, caller: CallerContext, account: str) -> dict[str,
         scope = rec.watch_scope(account)
     except MailError:
         scope = list(watch.mailboxes)  # Bridge unreachable: report the configured scope
+    # Mailboxes the caller may not read are left out entirely, names included.
+    visible = _readable_mailboxes(app, caller, account, scope, KIND_LIST)
+    sees_all = len(visible) == len(scope)
+    scope = visible
+    idle_mailbox = watcher.idle_mailbox(account) if watcher else None
+    if idle_mailbox is not None and idle_mailbox not in scope:
+        idle_mailbox = None
     now = _now()
     mailboxes = []
     for mb in scope:
@@ -628,15 +658,16 @@ def watch_status(app: MailApp, caller: CallerContext, account: str) -> dict[str,
         })
     return {
         "account": account,
-        "watch_mailboxes": list(watch.mailboxes),
+        "watch_mailboxes": [m for m in watch.mailboxes if m in scope],
         "poll_labels": watch.poll_labels,
         "scope": scope,
         "poll_interval_seconds": watcher.poll_interval if watcher else watch.poll_interval_seconds,
         "idle_configured": watch.idle,
-        "idle_mailbox": watcher.idle_mailbox(account) if watcher else None,
+        "idle_mailbox": idle_mailbox,
         "idle_active": watcher.idle_active(account) if watcher else False,
         "watcher_running": bool(watcher and watcher.running),
-        "last_error": watcher.last_error(account) if watcher else None,
+        # an error message can name any watched mailbox
+        "last_error": watcher.last_error(account) if watcher and sees_all else None,
         "mailboxes": mailboxes,
         "note": "Notifications are hints; use list_events with a cursor to catch up.",
     }

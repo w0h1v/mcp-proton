@@ -7,7 +7,7 @@ from collections import defaultdict
 from dataclasses import asdict
 from typing import Any
 
-from ..domain.errors import MailError
+from ..domain.errors import ErrorCode, MailError
 from ..domain.requests import CallerContext
 from . import effects, inventory
 from .core import MailApp
@@ -28,8 +28,15 @@ def list_accounts(app: MailApp, caller: CallerContext) -> list[dict[str, Any]]:
         try:
             app.authorize_read(caller, acct.name, kind="accounts.list")
         except MailError as exc:
+            # A pause is checked before account constraints, so a paused account is
+            # shown only to a caller whose constraints would otherwise allow it.
             if acct.name not in paused or exc.code.value != "account_paused":
                 first_error = first_error or exc
+                continue
+            if not _account_allowed(app, caller, acct.name):
+                # report it like any excluded account, without revealing the pause
+                first_error = first_error or MailError(
+                    ErrorCode.CONSTRAINT_VIOLATION, "account outside allowed accounts")
                 continue
         out.append({
             "name": acct.name,
@@ -41,6 +48,16 @@ def list_accounts(app: MailApp, caller: CallerContext) -> list[dict[str, Any]]:
     if not out and first_error is not None:
         raise first_error
     return out
+
+
+def _account_allowed(app: MailApp, caller: CallerContext, account: str) -> bool:
+    """Whether the caller's account constraints (global and client) include ``account``."""
+    policy = app.policy
+    chain = [policy.constraints]
+    client = policy.client(caller.client_id)
+    if client is not None and client.constraints is not None:
+        chain.append(client.constraints)
+    return all(c.allowed_accounts is None or account in c.allowed_accounts for c in chain)
 
 
 def _bridge_version(server_id: dict[str, str] | None) -> str | None:

@@ -95,3 +95,20 @@ def test_reads_require_read_permission(make_app, caller):
     assert e.value.code is ErrorCode.POLICY_DENIED
     with pytest.raises(MailError):
         accounts.health(app, caller, ACCOUNT)
+
+
+def test_paused_account_outside_constraints_stays_hidden(make_app, caller):
+    app = make_app(Preset.READER, paused_accounts=[ACCOUNT],
+                   clients=[ClientConfig(client_id="hermes",
+                                         constraints=Constraints(allowed_accounts=["other"]))])
+    with pytest.raises(MailError) as e:
+        accounts.list_accounts(app, caller)
+    assert e.value.code is ErrorCode.CONSTRAINT_VIOLATION
+    assert "paus" not in e.value.message
+
+
+def test_paused_account_inside_constraints_is_listed(make_app, caller):
+    app = make_app(Preset.READER, paused_accounts=[ACCOUNT],
+                   constraints=Constraints(allowed_accounts=[ACCOUNT]))
+    (row,) = accounts.list_accounts(app, caller)
+    assert row["name"] == ACCOUNT and row["paused"] is True
