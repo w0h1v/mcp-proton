@@ -7,5 +7,5 @@ authors:
   - name: "mcp-proton contributors"
 license: Apache-2.0
 repository-code: "https://github.com/w0h1v/mcp-proton"
-version: 0.2.0b1
+version: 0.2.0b2
 keywords: [mcp, model-context-protocol, proton-mail, email, imap, smtp, ai-agents]

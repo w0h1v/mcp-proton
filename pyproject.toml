@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcp-proton"
-version = "0.2.0b1"
+version = "0.2.0b2"
 description = "MCP server giving agents policy-controlled access to Proton Mail through Proton Mail Bridge"
 readme = "README.md"
 requires-python = ">=3.11"
