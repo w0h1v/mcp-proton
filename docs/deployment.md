@@ -43,9 +43,12 @@ Use this model when you want policy, credentials and approvals to sit outside th
 2. Place the configuration and policy files in that user's config directory. Make them owned by the service user and not writable by the agent user. `config.toml` and `policy.toml` hold settings and owner policy, not secrets.
 3. Keep the data directory (the SQLite database and managed artifacts) owned by the service user. The agent user should have no read access to it.
 4. Store Bridge credentials in the service user's keyring. Do not store them in a file the agent can read. If you use the `file:` secret provider, the file must be mode `0600` and owned by the service user.
-5. Keep the owner approval interface (the CLI or a future UI) under the owner's account, not under the agent's.
+5. Keep the owner approval interface (the CLI or the review UI) under the owner's account, not under the agent's.
 
 Separate users are not enough if the agent can still read Bridge credentials, reach an unprotected admin endpoint or gain the service user's privileges. Check each of these.
+
+6. Prefer import, export and attachment directories that only the service user can write. If an agent must share one, mcp-proton opens files in it one path component at a time without following symbolic links, so a link the agent plants or swaps in cannot redirect a read or write outside the directory. Files the agent puts there are still read and sent as the agent asked, within policy.
+7. A client allowed to create webhooks (the automation family) chooses where they are sent. `https` destinations may be on your private network, and plain `http` is allowed to loopback, so webhook creation is a way for the client to make the service send requests. Each delivery carries only event metadata (no subjects, addresses or bodies). Keep automation on Ask, or Deny it, for clients you do not trust with that.
 
 ### Network
 
@@ -71,7 +74,7 @@ Print a client configuration that uses HTTP with:
 mcp-proton client-config hermes --client-id hermes --http <service URL>
 ```
 
-Pass the URL of the running service. The output contains a token placeholder. Replace it with the client's token by hand. This document does not state whether the HTTP transport terminates TLS itself or what endpoint path it serves. Check the server output. Do not send a bearer token over plain HTTP across a network. Use a TLS-terminating tunnel or VPN.
+Pass the URL of the running service. The output contains a token placeholder. Replace it with the client's token by hand. The HTTP transport does not terminate TLS itself. Do not send a bearer token over plain HTTP across a network. Use a TLS-terminating tunnel or VPN.
 
 ### Owner-only administration
 
@@ -160,9 +163,7 @@ mcp-proton ui-token
 mcp-proton ui --host 127.0.0.1 --port 8766
 ```
 
-The command binds to loopback by default. The `ui` command imports a module (`admin/ui.py`) that was not present in the code reviewed for this guide. If the module is missing, the command reports that the review UI is not available in this install. Check your installed version before relying on the UI. Until the UI is verified, use the CLI for approvals.
-
-The UI needs authentication, owner-only administration, and origin and CSRF checks, as the design requires (see `docs/design.md`). Confirm these in the version you run.
+The command binds to loopback by default. The UI requires the owner token, sets a session cookie, and checks Host, Origin and a CSRF token on every change. Its pages are served with a restrictive Content-Security-Policy and all mail-derived text is escaped. Run it as the owner, not as the agent's user.
 
 ## Elicitation review over stdio
 

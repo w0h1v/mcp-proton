@@ -37,7 +37,7 @@ Independent project. Not affiliated with or endorsed by Proton AG.
 - **Honest about email.** Reading never marks mail read. Permanent deletion targets only the messages you named. If a send's outcome is unknown, it is never resent automatically.
 - **Effects, not raw IMAP verbs.** Removing a label and destroying a message can be the same IMAP command. mcp-proton classifies operations by what they do in Proton's model, and refuses when that's not established.
 - **Audit trail.** Every write is journaled with who asked, what policy decided and what happened, including partial results.
-- **No AI calls, no telemetry.** The service talks only to Bridge and to the MCP client that asked.
+- **No AI calls, no telemetry.** The service talks only to Bridge, to the MCP client that asked, and to webhook destinations you approve. FastMCP's own telemetry is switched off unless you set `FASTMCP_TELEMETRY_MODE`.
 
 ## How it works
 

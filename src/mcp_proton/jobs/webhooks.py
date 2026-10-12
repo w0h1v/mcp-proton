@@ -48,6 +48,12 @@ DELIVERY_HEADER = "X-MCP-Proton-Delivery"
 _REDACTED_KEYS = frozenset({"note"})  # user-written text never leaves in a webhook
 MAX_BACKOFF_SECONDS = 3600
 EVENTS_PER_PASS = 50
+# Delivery runs inside the scheduler's pass, so it is bounded: a few registrations
+# per client, one attempt per destination per pass (retries back off durably), and a
+# time budget per pass so unreachable destinations cannot hold up scheduled jobs.
+MAX_WEBHOOKS_PER_CLIENT = 10
+MAX_WEBHOOKS_TOTAL = 100
+DELIVERY_BUDGET_SECONDS = 15.0
 
 
 # ------------------------------------------------------------------ validation
@@ -155,6 +161,7 @@ def create(app: MailApp, caller: CallerContext, account: str, url: str,
     unknown = [t for t in types if t not in WEBHOOK_EVENT_TYPES]
     if unknown:
         raise invalid("unknown event type", types=unknown, known=sorted(WEBHOOK_EVENT_TYPES))
+    _check_quota(app, caller.client_id)
     host = urlsplit(url).hostname or ""
     req = OperationRequest(
         kind=KIND_WEBHOOK, family=OperationFamily.AUTOMATION, account=account,
@@ -174,9 +181,21 @@ def create_with_secret(app: MailApp, caller: CallerContext, account: str, url: s
     return out
 
 
+def _check_quota(app: MailApp, client_id: str) -> None:
+    rows = app.db.query(
+        "SELECT client_id, COUNT(*) FROM webhooks WHERE status != 'deleted' GROUP BY client_id")
+    counts = {r[0]: int(r[1]) for r in rows}
+    if counts.get(client_id, 0) >= MAX_WEBHOOKS_PER_CLIENT:
+        raise MailError(ErrorCode.LIMIT_EXCEEDED,
+                        f"at most {MAX_WEBHOOKS_PER_CLIENT} webhooks per client; delete one first")
+    if sum(counts.values()) >= MAX_WEBHOOKS_TOTAL:
+        raise MailError(ErrorCode.LIMIT_EXCEEDED, f"at most {MAX_WEBHOOKS_TOTAL} webhooks in total")
+
+
 @executor(KIND_WEBHOOK, OperationFamily.AUTOMATION)
 def _create_executor(app: MailApp, rec: OperationRecord) -> ExecResult:
     p = rec.request.payload
+    _check_quota(app, rec.client_id)  # again: approvals may have queued several
     wh_id = "wh_" + rec.id.removeprefix("op_")
     secret = "whsec_" + secrets.token_urlsafe(32)  # noqa: S105 - generated, not hardcoded
     cursor = int(app.db.query("SELECT COALESCE(MAX(seq),0) FROM events")[0][0])
@@ -266,23 +285,37 @@ class Dispatcher:
     """Delivers new events to every active webhook, in order, with retries."""
 
     def __init__(self, app: MailApp, *, sleep_fn: Callable[[float], None] = time.sleep,
-                 timeout: float = 10.0, max_attempts: int = 3, base_delay: float = 0.5,
-                 post: Callable[[str, bytes, dict[str, str], float], int] = _open) -> None:
+                 timeout: float = 5.0, max_attempts: int = 1, base_delay: float = 0.5,
+                 post: Callable[[str, bytes, dict[str, str], float], int] = _open,
+                 budget_seconds: float = DELIVERY_BUDGET_SECONDS,
+                 clock: Callable[[], float] = time.monotonic) -> None:
         self.app = app
         self.sleep = sleep_fn
         self.timeout = timeout
         self.max_attempts = max_attempts
         self.base_delay = base_delay
         self.post = post
+        self.budget_seconds = budget_seconds
+        self.clock = clock
 
     def deliver_all(self, now: datetime) -> int:
-        rows = self.app.db.query("SELECT * FROM webhooks WHERE status='active' ORDER BY id")
+        """One pass. Healthy destinations go first; the pass stops once its time budget
+        is spent, and the rest are served on the next pass."""
+        # Healthy destinations first, and among them the one served least recently, so a
+        # slow destination cannot keep the others waiting pass after pass.
+        rows = self.app.db.query(
+            "SELECT * FROM webhooks WHERE status='active' "
+            "ORDER BY failures, COALESCE(last_delivery_at, ''), id")
         delivered = 0
+        deadline = self.clock() + self.budget_seconds
         for wh in map(_row, rows):
+            if self.clock() >= deadline:
+                log.info("webhook delivery budget spent; continuing next pass")
+                break
             if wh.next_attempt_at is not None and wh.next_attempt_at > now:
                 continue
             try:
-                delivered += self.deliver(wh, now)
+                delivered += self.deliver(wh, now, deadline)
             except Exception:  # noqa: BLE001 - one bad destination never blocks the rest
                 log.exception("webhook %s delivery crashed", wh.id)
         return delivered
@@ -297,7 +330,9 @@ class Dispatcher:
                 raise
             return False
 
-    def deliver(self, wh: Webhook, now: datetime) -> int:
+    def deliver(self, wh: Webhook, now: datetime, deadline: float | None = None) -> int:
+        """Deliver ``wh``'s pending events in order; stop (keeping the cursor) once
+        ``deadline`` on :attr:`clock` has passed."""
         caller = job_caller(wh.client_id)
         rows = self.app.db.query(
             "SELECT * FROM events WHERE account=? AND seq>? ORDER BY seq LIMIT ?",
@@ -306,6 +341,8 @@ class Dispatcher:
         cursor = wh.cursor
         try:
             for r in rows:
+                if deadline is not None and self.clock() >= deadline:
+                    break
                 seq = int(r["seq"])
                 if r["type"] in wh.event_types and self._readable(caller, wh.account,
                                                                   r["mailbox"]):
@@ -330,7 +367,8 @@ class Dispatcher:
                            ) -> tuple[bool, str]:
         err = ""
         for attempt in range(1, self.max_attempts + 1):
-            body = json.dumps(build_payload(event, attempt), separators=(",", ":"),
+            # count attempts across passes, since each pass makes only one by default
+            body = json.dumps(build_payload(event, wh.failures + attempt), separators=(",", ":"),
                               sort_keys=True).encode()
             ts = int(now.timestamp())
             headers = {

@@ -37,6 +37,7 @@ from ..bridge.ports import MailStore
 from ..domain.errors import ErrorCode, MailError, invalid
 from ..domain.families import OperationFamily
 from ..domain.models import (
+    MAX_OUTGOING_ATTACHMENTS,
     Address,
     ArtifactAttachment,
     ItemResult,
@@ -199,7 +200,8 @@ def _exec_create(app: MailApp, rec: OperationRecord) -> ExecResult:
     _require_draft(store, p["mailbox"])
     raw = mime.build_message(
         _out_from_fields(rec.account, p), from_addr=Address(**p["from"]),
-        message_id=p["message_id"], attachments=att.load_manifest(app, p["attachments"]),
+        message_id=p["message_id"],
+        attachments=att.load_manifest(app, p["attachments"], rec.client_id),
         include_bcc_header=True)
     uv, uid, existing = _append_verified(store, p["mailbox"], raw, p["message_id"])
     handle = _token(rec.account, p["mailbox"], uv, uid)
@@ -272,6 +274,12 @@ def update_draft(app: MailApp, caller: CallerContext, handle: str, changes: dict
         else (ArtifactAttachment if "artifact_id" in i else LocalAttachment).model_validate(i)
         for i in changes.get("add_attachments") or []
     ]
+    # The updated draft must fit the same limits as a new message.
+    kept = existing - remove
+    if len(kept) + len(add_items) > MAX_OUTGOING_ATTACHMENTS:
+        raise invalid(f"a draft can have at most {MAX_OUTGOING_ATTACHMENTS} attachments")
+    _out_from_fields(h.account, {k: fields[k] for k in (*_ADDRESS_FIELDS, *_TEXT_FIELDS,
+                                                         "in_reply_to", "references")})
     manifest = att.build_manifest(app, caller, add_items, h.account)
 
     # The author's From is carried over unchanged; identity is enforced when sending.
@@ -316,7 +324,7 @@ def _exec_update(app: MailApp, rec: OperationRecord) -> ExecResult:
     if _sha(old_raw) != p["old_sha256"]:
         raise MailError(ErrorCode.CONFLICT, "the draft was edited since this update was requested")
     attachments = [*_kept_attachments(old_raw, p["keep_parts"]),
-                   *att.load_manifest(app, p["attachments"])]
+                   *att.load_manifest(app, p["attachments"], rec.client_id)]
     raw = mime.build_message(
         _out_from_fields(rec.account, p), from_addr=Address(**p["from"]),
         message_id=p["message_id"], attachments=attachments, include_bcc_header=True)
@@ -352,7 +360,9 @@ def discard_draft(app: MailApp, caller: CallerContext, handle: str,
     plan = effects.plan(effects.DomainOp.DRAFT_DISCARD, app.store(h.account).role_of(h.mailbox))
     req = OperationRequest(
         kind=KIND_DISCARD, family=plan.family, account=h.account, mailboxes=[h.mailbox],
-        targets=[h], payload={"handle": h.token(), "effects": [e.value for e in plan.effects]},
+        targets=[h], payload={"handle": h.token(), "effects": [e.value for e in plan.effects],
+                              # destroying a draft is a permanent deletion too
+                              "_also_families": sorted(f.value for f in plan.also_families)},
         summary="Discard draft (permanent)", idempotency_key=idempotency_key,
     )
     return app.run(caller, req)
@@ -362,7 +372,11 @@ def discard_draft(app: MailApp, caller: CallerContext, handle: str,
 def _exec_discard(app: MailApp, rec: OperationRecord) -> ExecResult:
     h = MessageHandle.parse(rec.request.payload["handle"])
     store = app.store(h.account)
-    effects.plan(effects.DomainOp.DRAFT_DISCARD, store.role_of(h.mailbox))  # role may have changed
+    # the mailbox's role may have changed since the request
+    plan = effects.plan(effects.DomainOp.DRAFT_DISCARD, store.role_of(h.mailbox))
+    if rec.request.payload.get("_also_families", []) != sorted(f.value for f in plan.also_families):
+        raise MailError(ErrorCode.CONFLICT, "the approved request no longer matches the "
+                        "policy families for discarding a draft; request it again")
     if h.uid not in store.fetch_flags(h.mailbox, h.uidvalidity, [h.uid]):
         return ExecResult(OperationStatus.SUCCEEDED, {"removed": False, "already_gone": True},
                           [ItemResult(target=h.token(), status="skipped",
@@ -428,6 +442,8 @@ def send_draft(app: MailApp, caller: CallerContext, handle: str,
     _require_draft(store, h.mailbox)
     raw = store.fetch_message(h.mailbox, h.uidvalidity, h.uid).raw
     fields = mime.extract_draft_payload(raw)
+    # what is journaled and sent must fit the limits of a new message
+    _out_from_fields(h.account, {k: fields[k] for k in ("to", "cc", "bcc", "subject")})
     account = app.config.account(h.account)
     from_addr = sender_identity(account, Address(**fields["from"]) if fields["from"] else None)
     recipients = dedupe_addresses(

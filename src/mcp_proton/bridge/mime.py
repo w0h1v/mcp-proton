@@ -160,20 +160,31 @@ def _is_container(part: PyMessage) -> bool:
     return part.get_content_maintype() == "multipart" and part.is_multipart()
 
 
+# Structural budget for untrusted MIME: parts beyond these are not walked, so a
+# crafted message cannot make one read do unbounded work.
+MAX_MIME_PARTS = 1000
+MAX_MIME_DEPTH = 32
+
+
 def _leaves(msg: PyMessage) -> list[tuple[str, PyMessage]]:
-    """All leaf parts with IMAP-style ids. A broken multipart (no children) is a leaf."""
+    """All leaf parts with IMAP-style ids. A broken multipart (no children) is a leaf.
+    At most ``MAX_MIME_PARTS`` leaves, nested at most ``MAX_MIME_DEPTH`` deep."""
     out: list[tuple[str, PyMessage]] = []
 
-    def walk(part: PyMessage, prefix: str) -> None:
+    def walk(part: PyMessage, prefix: str, depth: int) -> None:
+        if depth > MAX_MIME_DEPTH:
+            return
         for i, child in enumerate(part.get_payload(), start=1):  # type: ignore[arg-type]
+            if len(out) >= MAX_MIME_PARTS:
+                return
             pid = f"{prefix}.{i}" if prefix else str(i)
             if _is_container(child):
-                walk(child, pid)
+                walk(child, pid, depth + 1)
             else:
                 out.append((pid, child))
 
     if _is_container(msg):
-        walk(msg, "")
+        walk(msg, "", 1)
     else:
         out.append(("1", msg))
     return out
@@ -240,6 +251,18 @@ def _part_text(part: PyMessage) -> str:
         return data.decode("utf-8", errors="replace")
 
 
+def _part_size(part: PyMessage) -> int:
+    """Decoded size of a leaf part; base64 is measured without decoding it."""
+    with contextlib.suppress(Exception):  # fall back to decoding
+        cte = str(part.get("Content-Transfer-Encoding", "")).strip().lower()
+        if cte == "base64" and part.get_content_maintype() != "message":
+            encoded = part.get_payload(decode=False)
+            if isinstance(encoded, str):
+                compact = "".join(encoded.split())
+                return max(0, len(compact) * 3 // 4 - compact[-2:].count("="))
+    return len(_part_bytes(part))
+
+
 def _info(pid: str, part: PyMessage) -> AttachmentInfo:
     cid = _content_id(part)
     disp = _disposition(part)
@@ -250,7 +273,7 @@ def _info(pid: str, part: PyMessage) -> AttachmentInfo:
         part_id=pid,
         filename=_filename(part),
         content_type=ctype,
-        size=len(_part_bytes(part)),
+        size=_part_size(part),
         content_id=cid,
         inline=disp == "inline" or (disp != "attachment" and cid is not None),
     )
@@ -294,16 +317,31 @@ def _defect_notes(msg: PyMessage) -> list[str]:
 
 
 def _bodies(msg: PyMessage) -> tuple[str | None, str | None]:
+    text, html, _skipped = _collect_bodies(msg, None)
+    return text, html
+
+
+def _collect_bodies(msg: PyMessage, max_chars: int | None
+                    ) -> tuple[str | None, str | None, bool]:
+    """Text and HTML bodies, and whether parts were skipped. With ``max_chars``, once
+    ``max_chars`` characters of a kind are collected its later parts are not decoded
+    (the caller truncates to that length anyway)."""
     texts: list[str] = []
     htmls: list[str] = []
+    sizes = {"text": 0, "html": 0}
+    skipped = False
     for _pid, part in _leaves(msg):
         if _is_attachment(part):
             continue
-        if part.get_content_type() == "text/html":
-            htmls.append(_part_text(part))
-        else:
-            texts.append(_part_text(part))
-    return ("\n\n".join(texts) if texts else None, "\n\n".join(htmls) if htmls else None)
+        kind = "html" if part.get_content_type() == "text/html" else "text"
+        if max_chars is not None and sizes[kind] >= max_chars:
+            skipped = True
+            continue
+        chunk = _part_text(part)
+        sizes[kind] += len(chunk)
+        (htmls if kind == "html" else texts).append(chunk)
+    return ("\n\n".join(texts) if texts else None, "\n\n".join(htmls) if htmls else None,
+            skipped)
 
 
 # ------------------------------------------------------------------ header access
@@ -457,8 +495,7 @@ def parse_message(
 def _build_body(
     msg: PyMessage, max_chars: int, body_format: Literal["text", "html", "both"]
 ) -> MessageBody:
-    text, html = _bodies(msg)
-    truncated = False
+    text, html, truncated = _collect_bodies(msg, max_chars)
     if html is not None and len(html) > max_chars:
         html, truncated = html[:max_chars], True
     if text is not None and len(text) > max_chars:

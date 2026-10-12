@@ -165,7 +165,8 @@ def plan(op: DomainOp, source: R | None = None, dest: R | None = None,
     if op is O.DRAFT_DISCARD:
         if source is not R.DRAFTS:
             raise _unsupported(op, source, dest, "not a draft")
-        return EffectPlan(op, (Effect.DESTROY,), F.DRAFTS, reversible=False,
+        return EffectPlan(op, (Effect.DESTROY,), F.DRAFTS, (F.PERMANENT_DELETE,),
+                          reversible=False,
                           notes=("discarding a draft deletes it permanently",))
     if op is O.IMPORT:
         if dest in VIEWS or dest is None:

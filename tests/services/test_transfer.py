@@ -340,3 +340,32 @@ def test_export_policy_and_release_restrictions(make_app, caller, owner, seed, t
     with pytest.raises(MailError) as e:
         transfer.export_messages(locked, caller, [h2], str(tmp_path / "export"))
     assert e.value.code is ErrorCode.CONSTRAINT_VIOLATION
+
+
+def test_import_directory_file_count_is_capped(app, caller, tmp_path, monkeypatch):
+    monkeypatch.setattr(transfer, "MAX_IMPORT_FILES", 3)
+    for i in range(5):
+        eml(tmp_path, name=f"m{i}.eml", subject=f"m{i}")
+    with pytest.raises(MailError) as e:
+        transfer.import_eml(app, caller, ACCOUNT, [str(tmp_path / "import")], "INBOX")
+    assert e.value.code is ErrorCode.LIMIT_EXCEEDED
+
+
+def test_import_batch_limit_applies_before_hashing(make_app, caller, tmp_path, monkeypatch):
+    c = constraints(tmp_path)
+    c.max_batch_size = 2
+    app = make_app(constraints=c)
+    p = mbox(tmp_path, n=5)
+    monkeypatch.setattr(transfer, "_file_sha256",
+                        lambda path: pytest.fail("hashed before the batch limit applied"))
+    with pytest.raises(MailError) as e:
+        transfer.import_mbox(app, caller, ACCOUNT, str(p), "INBOX")
+    assert e.value.code is ErrorCode.CONSTRAINT_VIOLATION
+
+
+def test_oversized_mbox_message_stops_streaming(tmp_path):
+    p = tmp_path / "big.mbox"
+    p.write_bytes(b"From a@b Thu Oct  8 10:00:00 2026\nSubject: x\n\n" + b"y" * 5000 + b"\n")
+    with pytest.raises(MailError) as e:
+        list(transfer.iter_mbox(p, max_message_bytes=1000))
+    assert e.value.code is ErrorCode.TOO_LARGE

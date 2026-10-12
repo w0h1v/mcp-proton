@@ -44,6 +44,7 @@ from ..domain.models import (
 from ..domain.requests import CallerContext, OperationRequest
 from ..policy.model import Constraints
 from ..storage.journal import OperationRecord
+from . import safefs
 from .core import ExecResult, MailApp, executor
 
 KIND_EXPORT = "attachments.export"
@@ -125,28 +126,25 @@ def validate_filename(name: str) -> str:
     return sanitize_filename(name)
 
 
-def open_new_file(directory: Path, name: str) -> tuple[BinaryIO, Path]:
-    """Exclusively create ``directory/name`` (numeric suffix if taken); never
-    overwrites and never follows a symlink. Returns the open file and its path."""
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+def open_new_file(directory: safefs.Directory, name: str) -> tuple[BinaryIO, Path]:
+    """Exclusively create ``name`` in an opened directory (numeric suffix if taken);
+    never overwrites and never follows a symlink. Returns the open file and its path."""
     stem, dot, ext = name.rpartition(".")
     if not dot or not stem:
         stem, ext = name, ""
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     for n in range(1000):
         candidate = name if n == 0 else f"{stem} ({n}){'.' + ext if ext else ''}"
-        target = directory / candidate
         try:
-            fd = os.open(target, flags, 0o600)
+            fd = safefs.create_new(directory, candidate)
         except FileExistsError:
             continue
         except OSError as exc:
             raise MailError(ErrorCode.PATH_REJECTED, "cannot create the destination file") from exc
-        return os.fdopen(fd, "wb"), target
+        return os.fdopen(fd, "wb"), directory.path / candidate
     raise MailError(ErrorCode.PATH_REJECTED, "no free file name in the destination directory")
 
 
-def write_new_file(directory: Path, name: str, data: bytes) -> Path:
+def write_new_file(directory: safefs.Directory, name: str, data: bytes) -> Path:
     """Write ``data`` to a new file (see :func:`open_new_file`)."""
     fh, target = open_new_file(directory, name)
     try:
@@ -154,7 +152,7 @@ def write_new_file(directory: Path, name: str, data: bytes) -> Path:
             fh.write(data)
     except BaseException:
         with contextlib.suppress(OSError):
-            target.unlink()
+            safefs.unlink(directory, target.name)
         raise
     return target
 
@@ -282,9 +280,9 @@ def purge_expired_artifacts(app: MailApp) -> int:
 # ------------------------------------------------------------------ outgoing manifest
 
 
-def _read_limited(path: Path, limit: int) -> bytes:
+def _read_limited(path: Path | BinaryIO, limit: int) -> bytes:
     try:
-        with path.open("rb") as fh:
+        with path.open("rb") if isinstance(path, Path) else path as fh:
             data = fh.read(limit + 1)
     except OSError as exc:
         raise MailError(ErrorCode.NOT_FOUND, "attachment file cannot be read") from exc
@@ -308,9 +306,14 @@ def _entry_source(app: MailApp, caller: CallerContext, account: str | None,
         real = Path(os.path.realpath(item.path))
         # Path policy first: a path outside the ingest roots is never stat'ed or read.
         app.require_path(caller, OperationFamily.ATTACHMENT_INGEST, str(real))
-        if not real.is_file():
-            raise MailError(ErrorCode.NOT_FOUND, "attachment file does not exist")
-        data = _read_limited(real, limit)
+        try:
+            fh = safefs.open_file(app, caller.client_id, OperationFamily.ATTACHMENT_INGEST,
+                                  str(real))
+        except MailError as exc:
+            if exc.code is ErrorCode.NOT_FOUND:
+                raise MailError(ErrorCode.NOT_FOUND, "attachment file does not exist") from exc
+            raise
+        data = _read_limited(fh, limit)
         filename = sanitize_filename(item.filename or real.name)
         entry = {"source": "local", "path": str(real), "filename": filename,
                  "content_type": _guess_type(filename, item.content_type)}
@@ -355,18 +358,21 @@ def resolve_attachments(app: MailApp, caller: CallerContext,
     return out
 
 
-def load_manifest(app: MailApp, manifest: list[dict[str, Any]]) -> list[ResolvedAttachment]:
-    """Executor-time: re-read each source and verify it still matches the manifest
-    digest. A changed or missing source fails with ``CONFLICT`` before anything is
-    sent."""
+def load_manifest(app: MailApp, manifest: list[dict[str, Any]], client_id: str
+                  ) -> list[ResolvedAttachment]:
+    """Executor-time: re-read each source (local files under the requesting client's
+    ingest roots) and verify it still matches the manifest digest. A changed or
+    missing source fails with ``CONFLICT`` before anything is sent."""
     out = []
     for e in manifest:
         try:
+            source: Path | BinaryIO
             if e["source"] == "local":
-                path = Path(os.path.realpath(e["path"]))
+                source = safefs.open_file(app, client_id, OperationFamily.ATTACHMENT_INGEST,
+                                          e["path"])
             else:
-                path = Path(_artifact_row(app, e["artifact_id"])["path"])
-            data = _read_limited(path, int(e["size"]))
+                source = Path(_artifact_row(app, e["artifact_id"])["path"])
+            data = _read_limited(source, int(e["size"]))
         except MailError as exc:
             raise MailError(ErrorCode.CONFLICT,
                             f"attachment {e['filename']!r} changed or is gone since the "
@@ -408,8 +414,8 @@ def _exec_export(app: MailApp, rec: OperationRecord) -> ExecResult:
     info, data = mime.get_part(_fetch_raw(app, h), p["part_id"])
     if hashlib.sha256(data).hexdigest() != p["sha256"]:
         raise MailError(ErrorCode.CONFLICT, "attachment content differs from the request")
-    dest = Path(p["dest_dir"])
-    target = write_new_file(dest, validate_filename(p["filename"]), data)
+    with safefs.open_dir(app, rec.client_id, OperationFamily.EXPORT, p["dest_dir"]) as dest:
+        target = write_new_file(dest, validate_filename(p["filename"]), data)
     item = ItemResult(target=p["handle"], status="succeeded", detail=target.name)
     return ExecResult(
         OperationStatus.SUCCEEDED,

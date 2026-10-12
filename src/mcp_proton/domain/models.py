@@ -16,7 +16,7 @@ import json
 import re
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -306,19 +306,31 @@ class ArtifactAttachment(Model):
     inline_cid: str | None = None
 
 
+# Bounds on outgoing content. Requests are journaled in full (including while they
+# wait for approval), so these also bound what one request can store.
+MAX_SUBJECT_CHARS = 2_000
+MAX_OUTGOING_BODY_CHARS = 2_000_000  # each of text and html
+MAX_REFERENCES = 200
+MAX_RECIPIENTS_PER_FIELD = 100  # each of to, cc, bcc and reply-to
+MAX_OUTGOING_ATTACHMENTS = 50
+MAX_MESSAGE_ID_CHARS = 998  # RFC 5322 line length
+MessageIdText = Annotated[str, Field(max_length=MAX_MESSAGE_ID_CHARS)]
+
+
 class OutgoingMessage(Model):
     account: str
     from_: Address | None = Field(default=None, alias="from")  # default: account address
-    to: list[Address] = Field(default_factory=list)
-    cc: list[Address] = Field(default_factory=list)
-    bcc: list[Address] = Field(default_factory=list)
-    reply_to: list[Address] = Field(default_factory=list)
-    subject: str = ""
-    text: str | None = None
-    html: str | None = None
-    in_reply_to: str | None = None
-    references: list[str] = Field(default_factory=list)
-    attachments: list[LocalAttachment | ArtifactAttachment] = Field(default_factory=list)
+    to: list[Address] = Field(default_factory=list, max_length=MAX_RECIPIENTS_PER_FIELD)
+    cc: list[Address] = Field(default_factory=list, max_length=MAX_RECIPIENTS_PER_FIELD)
+    bcc: list[Address] = Field(default_factory=list, max_length=MAX_RECIPIENTS_PER_FIELD)
+    reply_to: list[Address] = Field(default_factory=list, max_length=MAX_RECIPIENTS_PER_FIELD)
+    subject: str = Field(default="", max_length=MAX_SUBJECT_CHARS)
+    text: str | None = Field(default=None, max_length=MAX_OUTGOING_BODY_CHARS)
+    html: str | None = Field(default=None, max_length=MAX_OUTGOING_BODY_CHARS)
+    in_reply_to: MessageIdText | None = None
+    references: list[MessageIdText] = Field(default_factory=list, max_length=MAX_REFERENCES)
+    attachments: list[LocalAttachment | ArtifactAttachment] = Field(
+        default_factory=list, max_length=MAX_OUTGOING_ATTACHMENTS)
     forward_as_attachment: str | None = None  # message handle token
 
     def all_recipients(self) -> list[str]:

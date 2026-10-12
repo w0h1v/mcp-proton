@@ -285,3 +285,45 @@ def test_prepare_outgoing_strips_bcc_including_folded_lines():
     assert b"one@x.test" not in head and b"two@x.test" not in head
     assert b"Message-ID: <new@x.test>" in head and b"2024" not in head
     assert body == b"Bcc: not a header\r\n"
+
+
+def test_discard_needs_permanent_delete_approval(make_app, caller):
+    """Discarding destroys the draft, so Assistant (drafts Allow, permanent delete Ask)
+    must ask, and the draft stays until approved."""
+    app = make_app(Preset.ASSISTANT)
+    h = create(app, caller)
+    o = drafts.discard_draft(app, caller, h)
+    assert o.status is OperationStatus.PENDING
+    assert drafts_uids(app) == [MessageHandle.parse(h).uid]
+
+
+def test_discard_denied_when_permanent_delete_denied(make_app, caller):
+    app = make_app(Preset.AUTONOMOUS, rules=[
+        PolicyRule(family=OperationFamily.PERMANENT_DELETE, action=Action.DENY)])
+    h = create(app, caller)
+    with pytest.raises(MailError) as e:
+        drafts.discard_draft(app, caller, h)
+    assert e.value.code is ErrorCode.POLICY_DENIED
+    assert drafts_uids(app) == [MessageHandle.parse(h).uid]
+
+
+def test_update_cannot_exceed_outgoing_limits(app, caller):
+    from pydantic import ValidationError
+
+    h = create(app, caller)
+    with pytest.raises(ValidationError):
+        drafts.update_draft(app, caller, h, {"subject": "x" * 2_001})
+    with pytest.raises(ValidationError):
+        drafts.update_draft(app, caller, h, {"cc": [f"u{i}@example.com" for i in range(101)]})
+
+
+def test_send_draft_over_limits_is_refused(app, caller):
+    from pydantic import ValidationError
+
+    r = app.store(ACCOUNT).append("Drafts", make_raw(subject="x" * 3000, to="bob@example.com"),
+                                  flags=["\\Draft"])
+    h = MessageHandle(account=ACCOUNT, mailbox="Drafts", uidvalidity=r.uidvalidity,
+                      uid=r.uid).token()
+    with pytest.raises(ValidationError):
+        drafts.send_draft(app, caller, h)
+    assert app.db.query("SELECT COUNT(*) FROM operations")[0][0] == 0

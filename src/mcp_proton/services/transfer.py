@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -30,7 +31,7 @@ from datetime import UTC, datetime
 from email import utils as email_utils
 from email.parser import BytesHeaderParser
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, BinaryIO, Literal
 
 from ..domain.errors import ErrorCode, MailError, invalid, not_found
 from ..domain.families import OperationFamily
@@ -44,7 +45,7 @@ from ..domain.requests import CallerContext, OperationRequest
 from ..policy import engine
 from ..storage.journal import OperationRecord
 from . import attachments as att
-from . import effects
+from . import effects, safefs
 from .common import canonical_mailbox, parse_handles
 from .core import ExecResult, MailApp, executor
 
@@ -53,6 +54,10 @@ KIND_IMPORT_MBOX = "imports.mbox"
 KIND_EXPORT = "exports.messages"
 
 MAX_IMPORT_MESSAGE_BYTES = 100 * 1024 * 1024
+# Preflight work (listing, counting, hashing) happens before policy runs, so it is
+# bounded on its own: files per request, messages per request, bytes per message.
+MAX_IMPORT_FILES = 1000
+MAX_IMPORT_MESSAGES = 100_000
 MANIFEST_FLUSH_EVERY = 25
 _FLAG_RE = re.compile(r"^\\?[A-Za-z0-9$_.-]{1,64}$")
 _MANIFEST_ID_RE = re.compile(r"^op_[A-Za-z0-9_-]{8,64}$")
@@ -70,25 +75,31 @@ def to_crlf(data: bytes) -> bytes:
     return re.sub(rb"(?<!\r)\n", b"\r\n", data)
 
 
-def _file_sha256(path: Path) -> str:
+def _file_sha256(fh: BinaryIO) -> str:
+    """Digest of an open file from its start (the position is left at the end)."""
+    fh.seek(0)
     h = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            h.update(chunk)
+    for chunk in iter(lambda: fh.read(1 << 20), b""):
+        h.update(chunk)
     return h.hexdigest()
 
 
-def iter_mbox(path: Path) -> Iterator[bytes]:
+def iter_mbox(source: Path | BinaryIO, max_message_bytes: int | None = None
+              ) -> Iterator[bytes]:
     """Messages of an mboxrd/mboxo file, streamed one at a time (``>From `` lines
-    unescaped, LF endings preserved as found)."""
+    unescaped, LF endings preserved as found). A message over ``max_message_bytes``
+    raises before it is held in memory."""
+    limit = MAX_IMPORT_MESSAGE_BYTES if max_message_bytes is None else max_message_bytes
     cur: list[bytes] | None = None
+    size = 0
     prev_blank = True
-    with path.open("rb") as fh:
+    with source.open("rb") if isinstance(source, Path) else contextlib.nullcontext(source) as fh:
         for line in fh:
             if prev_blank and line.startswith(b"From "):
                 if cur:
                     yield _join_message(cur)
                 cur = []
+                size = 0
                 prev_blank = False
                 continue
             prev_blank = line in (b"\n", b"\r\n")
@@ -96,6 +107,10 @@ def iter_mbox(path: Path) -> Iterator[bytes]:
                 if line.strip():
                     raise invalid("not an mbox file (no 'From ' separator at the start)")
                 continue
+            size += len(line)
+            if size > limit:
+                raise MailError(ErrorCode.TOO_LARGE,
+                                "an mbox message is too large to import")
             cur.append(line[1:] if _FROM_ESCAPED.match(line) else line)
     if cur:
         yield _join_message(cur)
@@ -199,17 +214,29 @@ def _clean_flags(flags: Sequence[str] | None) -> list[str]:
     return out
 
 
+def _check_file_count(n: int) -> None:
+    if n > MAX_IMPORT_FILES:
+        raise MailError(ErrorCode.LIMIT_EXCEEDED, f"at most {MAX_IMPORT_FILES} files per import")
+
+
 def _eml_files(app: MailApp, caller: CallerContext, paths: Sequence[str]) -> list[Path]:
     files: list[Path] = []
     for raw in paths:
         real = Path(os.path.realpath(os.path.expanduser(raw)))
         app.require_path(caller, OperationFamily.IMPORT, str(real))  # before any stat
         if real.is_dir():
-            files.extend(sorted(p for p in real.iterdir() if p.suffix.lower() == ".eml"))
+            found: list[Path] = []
+            with os.scandir(real) as it:
+                for entry in it:
+                    if entry.name.lower().endswith(".eml"):
+                        found.append(Path(entry.path))
+                        _check_file_count(len(files) + len(found))
+            files.extend(sorted(found))
         elif real.is_file():
             files.append(real)
         else:
             raise not_found("import path does not exist")
+        _check_file_count(len(files))
     if not files:
         raise invalid("no .eml files to import")
     resolved = [Path(os.path.realpath(f)) for f in files]  # symlinks must stay in scope
@@ -233,17 +260,37 @@ def _import_request(app: MailApp, caller: CallerContext, kind: str, account: str
         if prior.get("account") != account or prior.get("mailbox") != mailbox:
             raise invalid("the manifest belongs to a different account or mailbox")
 
+    # The owner's batch limit is applied while counting, so an oversized import stops
+    # before the remaining files are read and hashed.
+    batch_limits = [c.max_batch_size
+                    for c in engine._intersect_constraints(app.policy, caller.client_id)
+                    if c.max_batch_size is not None]
+    batch_limit = min(batch_limits) if batch_limits else None
+
+    def check(n: int) -> None:
+        if batch_limit is not None and n > batch_limit:
+            raise MailError(ErrorCode.CONSTRAINT_VIOLATION,
+                            f"batch size exceeds limit {batch_limit}")
+        if n > MAX_IMPORT_MESSAGES:
+            raise MailError(ErrorCode.LIMIT_EXCEEDED,
+                            f"at most {MAX_IMPORT_MESSAGES} messages per import")
+
     entries: list[dict[str, Any]] = []
     total = 0
     for f in files:
         app.require_path(caller, OperationFamily.IMPORT, str(f))  # before stat/open/hash
-        size = f.stat().st_size
-        if not mbox and size > MAX_IMPORT_MESSAGE_BYTES:
-            raise MailError(ErrorCode.TOO_LARGE, "message file is too large to import")
-        count = sum(1 for _ in iter_mbox(f)) if mbox else 1
-        total += count
-        entries.append({"path": str(f), "sha256": _file_sha256(f), "size": size,
-                        "messages": count})
+        # count, size and digest all come from one descriptor opened without following links
+        with safefs.open_file(app, caller.client_id, OperationFamily.IMPORT, str(f)) as fh:
+            size = os.fstat(fh.fileno()).st_size
+            if not mbox and size > MAX_IMPORT_MESSAGE_BYTES:
+                raise MailError(ErrorCode.TOO_LARGE, "message file is too large to import")
+            count = 0
+            for _ in iter_mbox(fh) if mbox else (b"",):
+                count += 1
+                check(total + count)
+            total += count
+            entries.append({"path": str(f), "sha256": _file_sha256(fh), "size": size,
+                            "messages": count})
     if total == 0:
         raise invalid("the file contains no messages")
 
@@ -288,24 +335,34 @@ def import_mbox(app: MailApp, caller: CallerContext, account: str, path: str, ma
 # ------------------------------------------------------------------ import: execute
 
 
-def _sources(payload: dict[str, Any]) -> Iterator[tuple[str, str, bytes | None, str | None]]:
-    """Yield ``(label, key, raw, error)`` for every message to import."""
+def _sources(app: MailApp, client_id: str, payload: dict[str, Any]
+             ) -> Iterator[tuple[str, str, bytes | None, str | None]]:
+    """Yield ``(label, key, raw, error)`` for every message to import. Each file is
+    opened once under the client's import roots; its digest is checked and its
+    messages read through that same descriptor."""
     for entry in payload["files"]:
-        path = Path(entry["path"])
-        label = path.name
+        label = Path(entry["path"]).name
         if payload["mbox"]:
             try:
-                changed = _file_sha256(path) != entry["sha256"]
-            except OSError as exc:
+                fh = safefs.open_file(app, client_id, OperationFamily.IMPORT, entry["path"])
+            except MailError as exc:
                 raise MailError(ErrorCode.CONFLICT, "the import file is unreadable") from exc
-            if changed:
-                raise MailError(ErrorCode.CONFLICT, "the import file changed since the request")
-            for i, raw in enumerate(iter_mbox(path), start=1):
-                yield f"{label}#{i}", f"{i}:{hashlib.sha256(raw).hexdigest()}", raw, None
+            with fh:
+                try:
+                    changed = _file_sha256(fh) != entry["sha256"]
+                except OSError as exc:
+                    raise MailError(ErrorCode.CONFLICT, "the import file is unreadable") from exc
+                if changed:
+                    raise MailError(ErrorCode.CONFLICT,
+                                    "the import file changed since the request")
+                fh.seek(0)
+                for i, raw in enumerate(iter_mbox(fh), start=1):
+                    yield f"{label}#{i}", f"{i}:{hashlib.sha256(raw).hexdigest()}", raw, None
             continue
         try:
-            raw = path.read_bytes()
-        except OSError:
+            with safefs.open_file(app, client_id, OperationFamily.IMPORT, entry["path"]) as fh:
+                raw = fh.read(MAX_IMPORT_MESSAGE_BYTES + 1)
+        except (OSError, MailError):
             yield label, entry["sha256"], None, "file cannot be read"
             continue
         if hashlib.sha256(raw).hexdigest() != entry["sha256"]:
@@ -334,7 +391,7 @@ def _exec_import(app: MailApp, rec: OperationRecord) -> ExecResult:
     items: list[ItemResult] = []
     aborted = False
     try:
-        for label, key, raw, error in _sources(p):
+        for label, key, raw, error in _sources(app, rec.client_id, p):
             if aborted:
                 items.append(ItemResult(target=label, status="pending",
                                         detail="not attempted; resume this import"))
@@ -443,11 +500,13 @@ def mbox_entry(raw: bytes, internal_date: datetime | None) -> bytes:
 @executor(KIND_EXPORT, OperationFamily.EXPORT)
 def _exec_export(app: MailApp, rec: OperationRecord) -> ExecResult:
     p = rec.request.payload
+    with safefs.open_dir(app, rec.client_id, OperationFamily.EXPORT, p["dest_dir"]) as dest:
+        return _export_into(app, rec, dest)
+
+
+def _export_into(app: MailApp, rec: OperationRecord, dest: safefs.Directory) -> ExecResult:
+    p = rec.request.payload
     store = app.store(rec.account)
-    dest = Path(p["dest_dir"])
-    if not engine.path_within(str(dest), app.policy.constraints.export_dirs):
-        raise MailError(ErrorCode.PATH_REJECTED, "destination is outside the export directories")
-    dest.mkdir(parents=True, exist_ok=True, mode=0o700)
     mbox_fh = mbox_path = None
     if p["format"] == "mbox":
         mbox_fh, mbox_path = att.open_new_file(dest, f"messages-{rec.id}.mbox")

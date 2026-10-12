@@ -41,3 +41,22 @@ def test_folder_delete_requires_permanent_delete_when_non_empty():
 def test_table_is_unverified():
     rows = effect_table()
     assert rows and all(r["verified"] is False for r in rows)
+
+
+def test_every_destroying_plan_needs_permanent_delete():
+    """A plan that can destroy a message must pass the permanent-delete policy,
+    whatever its own family (found by the security review: draft discard did not)."""
+    import itertools
+
+    roles = [None, *R]
+    checked = 0
+    for op, src, dst, non_empty in itertools.product(O, roles, roles,
+                                                     (None, True, False)):
+        try:
+            p = plan(op, src, dst, non_empty=non_empty)
+        except MailError:
+            continue
+        if Effect.DESTROY in p.effects:
+            checked += 1
+            assert F.PERMANENT_DELETE in (p.family, *p.also_families), p
+    assert checked
