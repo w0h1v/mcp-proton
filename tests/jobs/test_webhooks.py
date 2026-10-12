@@ -219,3 +219,34 @@ def test_revoked_client_stops_receiving_but_keeps_position(make_app, owner, sink
     app.set_policy(PolicyConfig(preset=Preset.AUTONOMOUS,
                                 clients=[ClientConfig(client_id="hermes")]))
     assert disp.deliver_all(clock.after(seconds=2)) == 1  # position was held
+
+
+def test_registration_quota_per_client(app, caller, sink, monkeypatch):
+    monkeypatch.setattr(webhooks, "MAX_WEBHOOKS_PER_CLIENT", 2)
+    register(app, caller, sink)
+    register(app, caller, sink)
+    with pytest.raises(MailError) as e:
+        webhooks.create(app, caller, ACCOUNT, sink.url)
+    assert e.value.code is ErrorCode.LIMIT_EXCEEDED
+
+
+def test_one_attempt_per_pass_without_sleeping(app, caller, sink, clock):
+    register(app, caller, sink)
+    new_mail_event(app)
+    sleeps: list[float] = []
+    sink.fail = 10
+    assert Dispatcher(app, sleep_fn=sleeps.append).deliver_all(clock.after(seconds=1)) == 0
+    assert len(sink.requests) == 1 and sleeps == []
+    [row] = webhooks.list_webhooks(app, caller)
+    assert row["consecutive_failures"] == 1  # retried on a later pass, after backoff
+
+
+def test_delivery_budget_stops_the_pass(app, caller, sink, clock):
+    for _ in range(3):
+        register(app, caller, sink)
+    new_mail_event(app)
+    ticks = iter([0.0, 0.0, 20.0, 20.0, 20.0])  # budget is spent after the first webhook
+    disp = Dispatcher(app, sleep_fn=lambda s: None, budget_seconds=15.0,
+                      clock=lambda: next(ticks))
+    assert disp.deliver_all(clock.after(seconds=1)) == 1
+    assert len(sink.requests) == 1

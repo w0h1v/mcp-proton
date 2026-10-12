@@ -10,6 +10,10 @@ Fixes from an automated security review of 0.2.0b1.
 - `drafts_discard` deletes a draft permanently, so it now also needs the permanent-deletion permission. Under the Assistant preset it asks for approval instead of running at once.
 - `events_reconcile` without a mailbox, and `events_watch_status`, now cover only the watched mailboxes the caller may read; before, a client limited by `allowed_mailboxes` could reconcile, and see the names and activity of, every watched mailbox.
 - `accounts_list` no longer shows a paused account to a client whose allowed accounts exclude it.
+- Outgoing messages have size limits, checked before anything is built or journaled: subject 2,000 characters, text and HTML 2,000,000 each, 100 addresses in each of to/cc/bcc/reply-to, 50 attachments, 200 references.
+- Webhooks: at most 10 per client and 100 in total; one delivery attempt per destination per scheduler pass (failures back off as before, without blocking), and a 15-second delivery budget per pass, so unreachable destinations cannot delay scheduled sends and other jobs.
+- Imports: at most 1,000 files and 100,000 messages per request, and the owner's `max_batch_size` is applied while counting, before files are hashed. An mbox message over 100 MB is rejected while it is read instead of after it is held in memory.
+- Reading mail walks at most 1,000 MIME parts nested 32 deep, stops decoding body parts once the body limit is reached, and measures base64 attachments without decoding them.
 
 ## 0.2.0b1 — 2026-10-12
 

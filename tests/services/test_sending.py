@@ -388,3 +388,20 @@ def test_forward_refused_when_content_not_released(make_app, caller, tmp_path, f
     with pytest.raises(MailError) as e:
         sending.forward(app, caller, h, to=["bob@example.com"], as_attachment=as_attachment)
     assert e.value.code is ErrorCode.CONSTRAINT_VIOLATION
+
+
+@pytest.mark.parametrize("field", [
+    {"subject": "x" * 2_001},
+    {"text": "x" * 2_000_001},
+    {"html": "x" * 2_000_001},
+    {"references": ["<a@b>"] * 201},
+    {"in_reply_to": "<" + "a" * 1000 + ">"},
+    {"cc": [{"email": f"u{i}@example.com"} for i in range(101)]},
+])
+def test_oversized_outgoing_content_rejected_before_journaling(app, caller, field):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        sending.send(app, caller, OutgoingMessage.model_validate(
+            {"account": ACCOUNT, "to": [{"email": "bob@example.com"}], "text": "hi", **field}))
+    assert app.db.query("SELECT COUNT(*) FROM operations")[0][0] == 0

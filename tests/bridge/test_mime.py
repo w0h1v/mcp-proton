@@ -444,3 +444,56 @@ def test_quote_and_forward_text():
     html_only = orig(body={"html": "<p>Only <b>html</b></p>"})
     assert "Only html" in mime.quote_text(html_only)
     assert mime.quote_text(orig(body=None)).endswith("wrote:\n")
+
+
+# ---------------------------------------------------------------- structural budget
+
+def _multipart(children: list[bytes], boundary: str) -> bytes:
+    body = b"".join(b"--" + boundary.encode() + b"\r\n" + c + b"\r\n" for c in children)
+    return (b"Content-Type: multipart/mixed; boundary=\"" + boundary.encode() + b"\"\r\n\r\n"
+            + body + b"--" + boundary.encode() + b"--\r\n")
+
+
+def _leaf(i: int) -> bytes:
+    return (f"Content-Type: application/octet-stream\r\n"
+            f"Content-Disposition: attachment; filename=f{i}.bin\r\n"
+            f"Content-Transfer-Encoding: base64\r\n\r\nAAAA\r\n").encode()
+
+
+def test_part_count_is_capped(monkeypatch):
+    monkeypatch.setattr(mime, "MAX_MIME_PARTS", 5)
+    msg = mime._parse(b"Subject: x\r\n" + _multipart([_leaf(i) for i in range(20)], "b"))
+    assert len(mime.list_attachments(msg)) == 5
+
+
+def test_nesting_depth_is_capped(monkeypatch):
+    monkeypatch.setattr(mime, "MAX_MIME_DEPTH", 3)
+    part = _leaf(0)
+    for d in range(10):
+        part = _multipart([part], f"b{d}")
+    msg = mime._parse(b"Subject: x\r\n" + part)
+    assert mime.list_attachments(msg) == []
+
+
+def test_base64_size_is_measured_without_decoding(monkeypatch):
+    import base64
+
+    data = bytes(range(256)) * 7 + b"xy"
+    enc = base64.encodebytes(data)
+    raw = (b"Subject: x\r\n" + _multipart([
+        b"Content-Type: text/plain\r\n\r\nhi\r\n",
+        b"Content-Type: application/pdf\r\nContent-Disposition: attachment; filename=a.pdf\r\n"
+        b"Content-Transfer-Encoding: base64\r\n\r\n" + enc], "b"))
+    monkeypatch.setattr(mime, "_part_bytes", lambda p: pytest.fail("decoded for size"))
+    [info] = mime.list_attachments(mime._parse(raw))
+    assert info.size == len(data)
+
+
+def test_body_parts_past_the_limit_are_not_decoded(monkeypatch):
+    parts = [f"Content-Type: text/plain\r\n\r\n{'x' * 100}\r\n".encode() for _ in range(10)]
+    msg = mime._parse(b"Subject: x\r\n" + _multipart(parts, "b"))
+    calls = []
+    real = mime._part_text
+    monkeypatch.setattr(mime, "_part_text", lambda p: calls.append(1) or real(p))
+    body = mime._build_body(msg, 150, "both")
+    assert len(calls) == 2 and body.truncated

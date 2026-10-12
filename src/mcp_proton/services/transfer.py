@@ -53,6 +53,10 @@ KIND_IMPORT_MBOX = "imports.mbox"
 KIND_EXPORT = "exports.messages"
 
 MAX_IMPORT_MESSAGE_BYTES = 100 * 1024 * 1024
+# Preflight work (listing, counting, hashing) happens before policy runs, so it is
+# bounded on its own: files per request, messages per request, bytes per message.
+MAX_IMPORT_FILES = 1000
+MAX_IMPORT_MESSAGES = 100_000
 MANIFEST_FLUSH_EVERY = 25
 _FLAG_RE = re.compile(r"^\\?[A-Za-z0-9$_.-]{1,64}$")
 _MANIFEST_ID_RE = re.compile(r"^op_[A-Za-z0-9_-]{8,64}$")
@@ -78,10 +82,13 @@ def _file_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def iter_mbox(path: Path) -> Iterator[bytes]:
+def iter_mbox(path: Path, max_message_bytes: int | None = None) -> Iterator[bytes]:
     """Messages of an mboxrd/mboxo file, streamed one at a time (``>From `` lines
-    unescaped, LF endings preserved as found)."""
+    unescaped, LF endings preserved as found). A message over ``max_message_bytes``
+    raises before it is held in memory."""
+    limit = MAX_IMPORT_MESSAGE_BYTES if max_message_bytes is None else max_message_bytes
     cur: list[bytes] | None = None
+    size = 0
     prev_blank = True
     with path.open("rb") as fh:
         for line in fh:
@@ -89,6 +96,7 @@ def iter_mbox(path: Path) -> Iterator[bytes]:
                 if cur:
                     yield _join_message(cur)
                 cur = []
+                size = 0
                 prev_blank = False
                 continue
             prev_blank = line in (b"\n", b"\r\n")
@@ -96,6 +104,10 @@ def iter_mbox(path: Path) -> Iterator[bytes]:
                 if line.strip():
                     raise invalid("not an mbox file (no 'From ' separator at the start)")
                 continue
+            size += len(line)
+            if size > limit:
+                raise MailError(ErrorCode.TOO_LARGE,
+                                "an mbox message is too large to import")
             cur.append(line[1:] if _FROM_ESCAPED.match(line) else line)
     if cur:
         yield _join_message(cur)
@@ -199,17 +211,29 @@ def _clean_flags(flags: Sequence[str] | None) -> list[str]:
     return out
 
 
+def _check_file_count(n: int) -> None:
+    if n > MAX_IMPORT_FILES:
+        raise MailError(ErrorCode.LIMIT_EXCEEDED, f"at most {MAX_IMPORT_FILES} files per import")
+
+
 def _eml_files(app: MailApp, caller: CallerContext, paths: Sequence[str]) -> list[Path]:
     files: list[Path] = []
     for raw in paths:
         real = Path(os.path.realpath(os.path.expanduser(raw)))
         app.require_path(caller, OperationFamily.IMPORT, str(real))  # before any stat
         if real.is_dir():
-            files.extend(sorted(p for p in real.iterdir() if p.suffix.lower() == ".eml"))
+            found: list[Path] = []
+            with os.scandir(real) as it:
+                for entry in it:
+                    if entry.name.lower().endswith(".eml"):
+                        found.append(Path(entry.path))
+                        _check_file_count(len(files) + len(found))
+            files.extend(sorted(found))
         elif real.is_file():
             files.append(real)
         else:
             raise not_found("import path does not exist")
+        _check_file_count(len(files))
     if not files:
         raise invalid("no .eml files to import")
     resolved = [Path(os.path.realpath(f)) for f in files]  # symlinks must stay in scope
@@ -233,6 +257,21 @@ def _import_request(app: MailApp, caller: CallerContext, kind: str, account: str
         if prior.get("account") != account or prior.get("mailbox") != mailbox:
             raise invalid("the manifest belongs to a different account or mailbox")
 
+    # The owner's batch limit is applied while counting, so an oversized import stops
+    # before the remaining files are read and hashed.
+    batch_limits = [c.max_batch_size
+                    for c in engine._intersect_constraints(app.policy, caller.client_id)
+                    if c.max_batch_size is not None]
+    batch_limit = min(batch_limits) if batch_limits else None
+
+    def check(n: int) -> None:
+        if batch_limit is not None and n > batch_limit:
+            raise MailError(ErrorCode.CONSTRAINT_VIOLATION,
+                            f"batch size exceeds limit {batch_limit}")
+        if n > MAX_IMPORT_MESSAGES:
+            raise MailError(ErrorCode.LIMIT_EXCEEDED,
+                            f"at most {MAX_IMPORT_MESSAGES} messages per import")
+
     entries: list[dict[str, Any]] = []
     total = 0
     for f in files:
@@ -240,7 +279,10 @@ def _import_request(app: MailApp, caller: CallerContext, kind: str, account: str
         size = f.stat().st_size
         if not mbox and size > MAX_IMPORT_MESSAGE_BYTES:
             raise MailError(ErrorCode.TOO_LARGE, "message file is too large to import")
-        count = sum(1 for _ in iter_mbox(f)) if mbox else 1
+        count = 0
+        for _ in iter_mbox(f) if mbox else (b"",):
+            count += 1
+            check(total + count)
         total += count
         entries.append({"path": str(f), "sha256": _file_sha256(f), "size": size,
                         "messages": count})
