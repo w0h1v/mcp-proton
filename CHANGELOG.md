@@ -13,7 +13,9 @@ Fixes from an automated security review of 0.2.0b1.
 - Outgoing messages have size limits, checked before anything is built or journaled: subject 2,000 characters, text and HTML 2,000,000 each, 100 addresses in each of to/cc/bcc/reply-to, 50 attachments, 200 references.
 - Webhooks: at most 10 per client and 100 in total; one delivery attempt per destination per scheduler pass (failures back off as before, without blocking), and a 15-second delivery budget per pass, so unreachable destinations cannot delay scheduled sends and other jobs.
 - Imports: at most 1,000 files and 100,000 messages per request, and the owner's `max_batch_size` is applied while counting, before files are hashed. An mbox message over 100 MB is rejected while it is read instead of after it is held in memory.
+- Import, export and attachment files are opened inside their configured directories one path component at a time without following symbolic links, and read, hashed and written through those descriptors. A client that can write in a shared directory can no longer swap in a link after the path check to read a service-only file or write outside the directory. Export of messages now also honours the client's own export directories, not only the global ones.
 - Reading mail walks at most 1,000 MIME parts nested 32 deep, stops decoding body parts once the body limit is reached, and measures base64 attachments without decoding them.
+- Docs: the deployment guide describes the review UI as shipped, says the HTTP transport has no built-in TLS, and states what webhook creation lets a client reach; the README notes webhooks among the places the service sends data.
 
 ## 0.2.0b1 — 2026-10-12
 

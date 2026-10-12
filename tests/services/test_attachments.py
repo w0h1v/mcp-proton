@@ -103,10 +103,10 @@ def test_artifact_manifest_detects_tampering_and_expiry(app, caller):
     art = att.fetch_to_artifact(app, caller, h, "2")
     items = [ArtifactAttachment(artifact_id=art["artifact_id"])]
     manifest = att.build_manifest(app, caller, items)
-    assert manifest[0]["sha256"] and att.load_manifest(app, manifest)[0].data == PDF
+    assert manifest[0]["sha256"] and att.load_manifest(app, manifest, "hermes")[0].data == PDF
     (app.config.resolved_artifact_dir() / art["artifact_id"]).write_bytes(b"tampered!")
     with pytest.raises(MailError) as e:
-        att.load_manifest(app, manifest)
+        att.load_manifest(app, manifest, "hermes")
     assert e.value.code is ErrorCode.CONFLICT
     with pytest.raises(MailError) as e2:
         att.resolve_attachments(app, caller, [ArtifactAttachment(artifact_id="art_nope")])

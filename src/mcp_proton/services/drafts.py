@@ -199,7 +199,8 @@ def _exec_create(app: MailApp, rec: OperationRecord) -> ExecResult:
     _require_draft(store, p["mailbox"])
     raw = mime.build_message(
         _out_from_fields(rec.account, p), from_addr=Address(**p["from"]),
-        message_id=p["message_id"], attachments=att.load_manifest(app, p["attachments"]),
+        message_id=p["message_id"],
+        attachments=att.load_manifest(app, p["attachments"], rec.client_id),
         include_bcc_header=True)
     uv, uid, existing = _append_verified(store, p["mailbox"], raw, p["message_id"])
     handle = _token(rec.account, p["mailbox"], uv, uid)
@@ -316,7 +317,7 @@ def _exec_update(app: MailApp, rec: OperationRecord) -> ExecResult:
     if _sha(old_raw) != p["old_sha256"]:
         raise MailError(ErrorCode.CONFLICT, "the draft was edited since this update was requested")
     attachments = [*_kept_attachments(old_raw, p["keep_parts"]),
-                   *att.load_manifest(app, p["attachments"])]
+                   *att.load_manifest(app, p["attachments"], rec.client_id)]
     raw = mime.build_message(
         _out_from_fields(rec.account, p), from_addr=Address(**p["from"]),
         message_id=p["message_id"], attachments=attachments, include_bcc_header=True)

@@ -368,7 +368,7 @@ def _exec_send(app: MailApp, rec: OperationRecord) -> ExecResult:
     p = rec.request.payload
     account = app.config.account(rec.account)
     from_addr = sender_identity(account, Address(**p["from"]))  # identities may have changed
-    resolved = att.load_manifest(app, p["attachments"])  # CONFLICT if a file changed
+    resolved = att.load_manifest(app, p["attachments"], rec.client_id)  # CONFLICT if a file changed
     forwarded: bytes | None = None
     if p.get("forward"):
         forwarded = _fetch_verified(app, p["forward"]["handle"], p["forward"]["sha256"])
