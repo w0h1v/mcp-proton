@@ -26,7 +26,7 @@
 **mcp-proton** is an [MCP](https://modelcontextprotocol.io) server that gives AI agents access to Proton Mail through [Proton Mail Bridge](https://proton.me/mail/bridge). You decide what each agent may do, per action: read, organize, draft, send or delete. Every operation goes through one policy engine, whether it comes from an MCP client, the CLI, the review UI or a scheduled job.
 
 > [!IMPORTANT]
-> **Beta (0.2.0b1).** Everything in the [design](docs/design.md) is implemented and tested against fake IMAP/SMTP servers, and on one live Proton Mail Bridge 03.27.01 account: the full [compatibility probe](#compatibility) and one approved send. The reply path, other Bridge versions and Linux/Windows are not yet tested live; see [docs/compatibility.md](docs/compatibility.md). Capabilities report as `unverified` until you run the probe against your own Bridge and record the results. Tool schemas and storage formats may still change before 1.0; each change is listed in the [changelog](CHANGELOG.md).
+> **Beta (0.2.0b2).** Everything in the [design](docs/design.md) is implemented and tested against fake IMAP/SMTP servers, and on one live Proton Mail Bridge 03.27.01 account: the full [compatibility probe](#compatibility) and one approved send. The reply path, other Bridge versions and Linux/Windows are not yet tested live; see [docs/compatibility.md](docs/compatibility.md). Capabilities report as `unverified` until you run the probe against your own Bridge and record the results. Tool schemas and storage formats may still change before 1.0; each change is listed in the [changelog](CHANGELOG.md).
 
 Independent project. Not affiliated with or endorsed by Proton AG.
 
@@ -59,7 +59,7 @@ flowchart TB
 **Requirements:** a paid Proton Mail plan that includes Bridge, with Bridge installed and signed in, and Python 3.11 or newer. macOS is the first development target. Linux and Windows are untested.
 
 ```sh
-pip install https://github.com/w0h1v/mcp-proton/releases/download/v0.2.0b1/mcp_proton-0.2.0b1-py3-none-any.whl
+pip install https://github.com/w0h1v/mcp-proton/releases/download/v0.2.0b2/mcp_proton-0.2.0b2-py3-none-any.whl
 # or from source: git clone https://github.com/w0h1v/mcp-proton && cd mcp-proton && uv venv && uv pip install -e .
 mcp-proton init                       # connect Bridge, pin its certificate, choose a preset
 mcp-proton client-config hermes       # or: claude-desktop, generic
