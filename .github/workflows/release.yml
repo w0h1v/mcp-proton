@@ -1,7 +1,7 @@
 name: Release
 
 # Push a version tag to release, e.g.:
-#   git tag -s v0.1.0a1 -m "mcp-proton 0.1.0a1" && git push origin v0.1.0a1
+#   git tag -s v0.2.0b1 -m "mcp-proton 0.2.0b1" && git push origin v0.2.0b1
 # The tag must match the version in pyproject.toml. Pre-release versions
 # (a/b/rc) become GitHub pre-releases.
 on:
