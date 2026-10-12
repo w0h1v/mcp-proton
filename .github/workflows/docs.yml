@@ -1,13 +1,13 @@
 name: Docs
 
 # Builds the documentation site on every pull request and publishes it to GitHub
-# Pages from the default branch. Enable Pages with source "GitHub Actions" first.
+# Pages from the default branch. README.md is the site's home page, so it counts too. Enable Pages with source "GitHub Actions" first.
 on:
   push:
     branches: [main]
-    paths: ["docs/**", "mkdocs.yml", ".github/workflows/docs.yml"]
+    paths: ["docs/**", "README.md", "mkdocs.yml", "mkdocs_hooks.py", ".github/workflows/docs.yml"]
   pull_request:
-    paths: ["docs/**", "mkdocs.yml", ".github/workflows/docs.yml"]
+    paths: ["docs/**", "README.md", "mkdocs.yml", "mkdocs_hooks.py", ".github/workflows/docs.yml"]
   workflow_dispatch:
 
 permissions:
