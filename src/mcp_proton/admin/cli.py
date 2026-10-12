@@ -311,8 +311,10 @@ class Cli:
             print("No accounts configured. Run `mcp-proton init`.")
         else:
             _table([[r["name"], r["imap"], r["smtp"], r["security"],
-                     "pinned" if r["tls_pinned"] else "-", "paused" if r["paused"] else ""]
-                    for r in rows], ["NAME", "IMAP", "SMTP", "TLS", "PIN", "STATE"])
+                     "pinned" if r["tls_pinned"] else "-", r["address_mode"] or "-",
+                     ", ".join(r["identities"]) or "-", "paused" if r["paused"] else ""]
+                    for r in rows],
+                   ["NAME", "IMAP", "SMTP", "TLS", "PIN", "MODE", "IDENTITIES", "STATE"])
         return 0
 
     def cmd_accounts_remove(self) -> int:

@@ -342,6 +342,7 @@ def run_init(args: argparse.Namespace, directory: Path | None,
                 break
             args.name = args.address = args.username = args.secret_ref = None
             args.tls_fingerprint = args.tls_ca_file = None
+            args.identity, args.address_mode = [], None  # per account, asked again
         print("3. Accounts configured:", ", ".join(a.name for a in cfg.accounts))
         choose_preset(args, pr, directory)
         _choose_storage(args, pr, cfg, directory)
