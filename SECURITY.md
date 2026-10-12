@@ -4,7 +4,7 @@ mcp-proton is an independent project and is not affiliated with or endorsed by P
 
 ## Supported versions
 
-The project is pre-1.0. Only the latest release receives security fixes. No release has been published yet.
+The project is pre-1.0. Only the latest release receives security fixes; at present that is 0.2.0b2. Upgrade from 0.2.0b1 or 0.1.0a1, which have known security issues fixed in 0.2.0b2 (see the changelog).
 
 | Version | Supported |
 |---|---|
