@@ -1,6 +1,20 @@
 # Changelog
 
-All notable changes are recorded here. The project follows semantic versioning from 1.0; before that, tool schemas, preset membership and storage formats may change between alpha releases, and each change will be listed here.
+All notable changes are recorded here. The project follows semantic versioning from 1.0; before that, tool schemas, preset membership and storage formats may change between pre-1.0 releases, and each change will be listed here.
+
+## 0.2.0b1 — 2026-10-12
+
+First beta. The feature set in the design is complete and has been exercised on a live Proton Mail Bridge; tool schemas and storage formats may still change before 1.0. No code changes since 0.1.0a1.
+
+### Changed
+- Version and package classifier move from alpha to beta (`Development Status :: 4 - Beta`).
+- Docs: the roadmap, compatibility page and README describe the release and what was tested live; the README tool table lists every tool group's tools.
+
+### Still to do before 1.0
+- Live tests of replies, forwards and recipient-side delivery.
+- A second Bridge version or operating system.
+- Reviewed probe evidence in the packaged `compatibility.json`.
+- Independent security review; clean install, upgrade and uninstall checks.
 
 ## 0.1.0a1 — 2026-10-11
 

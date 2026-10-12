@@ -10,7 +10,7 @@
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
   <img alt="Python 3.11 to 3.13" src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-3776ab">
   <a href="https://modelcontextprotocol.io"><img alt="MCP server" src="https://img.shields.io/badge/MCP-server-7c3aed"></a>
-  <img alt="Status: alpha" src="https://img.shields.io/badge/status-alpha-orange">
+  <img alt="Status: beta" src="https://img.shields.io/badge/status-beta-yellow">
   <a href="docs/compatibility.md"><img alt="Bridge tested: 03.27.01" src="https://img.shields.io/badge/Bridge%20tested-03.27.01-yellowgreen"></a>
 </p>
 
@@ -26,7 +26,7 @@
 **mcp-proton** is an [MCP](https://modelcontextprotocol.io) server that gives AI agents access to Proton Mail through [Proton Mail Bridge](https://proton.me/mail/bridge). You decide what each agent may do, per action: read, organize, draft, send or delete. Every operation goes through one policy engine, whether it comes from an MCP client, the CLI, the review UI or a scheduled job.
 
 > [!IMPORTANT]
-> **Alpha (0.1.0a1).** Everything in the [design](docs/design.md) is implemented and tested against fake IMAP/SMTP servers, and on one live Proton Mail Bridge 03.27.01 account: the full [compatibility probe](#compatibility) and one approved send. The reply path, other Bridge versions and Linux/Windows are not yet tested live; see [docs/compatibility.md](docs/compatibility.md). Capabilities report as `unverified` until you run the probe against your own Bridge and record the results.
+> **Beta (0.2.0b1).** Everything in the [design](docs/design.md) is implemented and tested against fake IMAP/SMTP servers, and on one live Proton Mail Bridge 03.27.01 account: the full [compatibility probe](#compatibility) and one approved send. The reply path, other Bridge versions and Linux/Windows are not yet tested live; see [docs/compatibility.md](docs/compatibility.md). Capabilities report as `unverified` until you run the probe against your own Bridge and record the results. Tool schemas and storage formats may still change before 1.0; each change is listed in the [changelog](CHANGELOG.md).
 
 Independent project. Not affiliated with or endorsed by Proton AG.
 
@@ -59,7 +59,7 @@ flowchart TB
 **Requirements:** a paid Proton Mail plan that includes Bridge, with Bridge installed and signed in, and Python 3.11 or newer. macOS is the first development target. Linux and Windows are untested.
 
 ```sh
-pip install https://github.com/w0h1v/mcp-proton/releases/download/v0.1.0a1/mcp_proton-0.1.0a1-py3-none-any.whl
+pip install https://github.com/w0h1v/mcp-proton/releases/download/v0.2.0b1/mcp_proton-0.2.0b1-py3-none-any.whl
 # or from source: git clone https://github.com/w0h1v/mcp-proton && cd mcp-proton && uv venv && uv pip install -e .
 mcp-proton init                       # connect Bridge, pin its certificate, choose a preset
 mcp-proton client-config hermes       # or: claude-desktop, generic
