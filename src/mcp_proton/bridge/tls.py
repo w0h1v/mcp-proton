@@ -75,18 +75,26 @@ def verify_peer(account: AccountConfig, sock: object) -> None:
                         expected=normalize_fingerprint(account.tls_fingerprint_sha256)[:16] + "...")
 
 
-def fetch_fingerprint_starttls_imap(host: str, port: int, timeout: float = 10.0) -> str:
-    """Setup helper: read Bridge's certificate fingerprint via IMAP STARTTLS so the
-    owner can confirm and pin it (trust on first use, shown to the owner)."""
+def fetch_fingerprint_imap(host: str, port: int, security: Security = Security.STARTTLS,
+                           timeout: float = 10.0) -> str:
+    """Setup helper: read Bridge's certificate fingerprint over IMAP (STARTTLS, or
+    implicit TLS when Bridge's connection mode is SSL) so the owner can confirm and
+    pin it (trust on first use, shown to the owner)."""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE  # only to read the cert for owner confirmation
     with socket.create_connection((host, port), timeout=timeout) as raw:
-        f = raw.makefile("rb")
-        f.readline()  # greeting
-        raw.sendall(b"a1 STARTTLS\r\n")
-        line = f.readline()
-        if not line.startswith(b"a1 OK"):
-            raise MailError(ErrorCode.TLS_ERROR, "server refused STARTTLS")
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE  # only to read the cert for owner confirmation
+        if security is Security.STARTTLS:
+            f = raw.makefile("rb")
+            f.readline()  # greeting
+            raw.sendall(b"a1 STARTTLS\r\n")
+            line = f.readline()
+            if not line.startswith(b"a1 OK"):
+                raise MailError(ErrorCode.TLS_ERROR, "server refused STARTTLS; if Bridge's "
+                                "connection mode is SSL, use --security ssl")
         with ctx.wrap_socket(raw, server_hostname=host) as tls:
             return peer_fingerprint(tls)
+
+
+def fetch_fingerprint_starttls_imap(host: str, port: int, timeout: float = 10.0) -> str:
+    return fetch_fingerprint_imap(host, port, Security.STARTTLS, timeout)

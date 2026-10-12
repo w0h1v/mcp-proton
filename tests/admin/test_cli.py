@@ -324,3 +324,74 @@ def test_policy_show_includes_client_constraints(capsys):
     assert "@allowed.test" in text
     _, other, _ = run(capsys, "policy", "show", "--client", "nobody")
     assert "not configured" in other
+
+
+def test_init_records_ssl_mode_address_mode_and_identities(capsys):
+    argv = ["init", "--non-interactive", "--name", "main", "--address", ADDRESS,
+            "--secret-ref", "env:X", "--tls-fingerprint", "aa", "--skip-connection-test",
+            "--security", "ssl", "--address-mode", "combined",
+            "--identity", "alias@proton.example", "--identity", "Alias@proton.example",
+            "--identity", ADDRESS]
+    assert run(capsys, *argv)[0] == 0
+    acct = load_service_config().accounts[0]
+    assert acct.imap_security.value == "ssl" and acct.smtp_security.value == "ssl"
+    assert acct.address_mode == "combined"
+    assert acct.identities == ["alias@proton.example"]  # deduplicated, own address dropped
+    _, out, _ = run(capsys, "accounts", "list", "--json")
+    assert '"address_mode": "combined"' in out
+    _, out, _ = run(capsys, "accounts", "list")
+    assert "MODE" in out and "combined" in out and "alias@proton.example" in out
+
+
+def test_interactive_second_account_does_not_inherit_identities(capsys, monkeypatch,
+                                                                keyring_calls):
+    names = iter(["main", "second"])
+    addresses = iter([ADDRESS, "b@proton.example"])
+    more = iter(["y", "n"])
+    asked: list[str] = []
+
+    def answer(prompt=""):
+        asked.append(prompt)
+        if prompt.startswith("Account name"):
+            return next(names)
+        if prompt.startswith("Proton address"):
+            return next(addresses)
+        if prompt.startswith("Add another account"):
+            return next(more)
+        if "Pin this certificate" in prompt:
+            return "y"
+        return ""  # accept every default
+
+    monkeypatch.setattr("builtins.input", answer)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": "bridge-pass")
+    monkeypatch.setattr("mcp_proton.bridge.tls.fetch_fingerprint_imap",
+                        lambda *a, **k: "aa" * 32)
+    argv = ["init", "--secret-ref", "env:X", "--skip-connection-test",
+            "--identity", "alias@proton.example"]
+    code, _, err = run(capsys, *argv)
+    assert code == 0, (err, asked)
+    accounts = {a.name: a for a in load_service_config().accounts}
+    assert accounts["main"].identities == ["alias@proton.example"]
+    assert accounts["second"].identities == []
+    assert accounts["second"].address_mode == "combined"  # asked again, default taken
+
+
+def test_init_defaults_to_starttls_and_unknown_address_mode(capsys):
+    argv = ["init", "--non-interactive", "--address", ADDRESS, "--secret-ref", "env:X",
+            "--tls-fingerprint", "aa", "--skip-connection-test"]
+    assert run(capsys, *argv)[0] == 0
+    acct = load_service_config().accounts[0]
+    assert acct.imap_security.value == "starttls" and acct.address_mode is None
+
+
+@pytest.mark.parametrize("extra, message", [
+    (["--address-mode", "split", "--identity", "alias@proton.example"], "split mode"),
+    (["--identity", "Alias <alias@proton.example>"], "plain email address"),
+    (["--security", "ssl", "--insecure-loopback-plaintext"], "--security"),
+])
+def test_init_rejects_inconsistent_bridge_options(capsys, extra, message):
+    argv = ["init", "--non-interactive", "--address", ADDRESS, "--secret-ref", "env:X",
+            "--tls-fingerprint", "aa", "--skip-connection-test", *extra]
+    code, _, err = run(capsys, *argv)
+    assert code == 1 and message in err

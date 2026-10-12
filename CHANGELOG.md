@@ -2,6 +2,12 @@
 
 All notable changes are recorded here. The project follows semantic versioning from 1.0; before that, tool schemas, preset membership and storage formats may change between pre-1.0 releases, and each change will be listed here.
 
+## Unreleased
+
+### Added
+- Setup takes Bridge's connection mode (`--security starttls|ssl`, for IMAP and SMTP), address mode (`--address-mode combined|split`) and extra sender addresses (`--identity`, combined mode only). Before, SSL mode and identities needed hand edits to `config.toml`, and the address mode was never recorded. The certificate fingerprint is read over implicit TLS when the mode is SSL. `accounts list` shows the address mode and identities.
+- Docs: a Proton Mail Bridge page covering setup from Mailbox details, the Bridge settings that matter (ports, connection mode, exported certificates, Show All Mail, split addresses, repair and reset), Bridge behaviour agents will notice, and troubleshooting by error code.
+
 ## 0.2.0b2 — 2026-10-12
 
 Security-fix beta: upgrade from 0.2.0b1. Two behaviour changes: under the Assistant preset `drafts_discard` now asks for approval, and a draft discard already waiting for approval before upgrading fails on resume and must be requested again.

@@ -303,6 +303,7 @@ class Cli:
             {"name": x.name, "imap": f"{x.imap_host}:{x.imap_port}",
              "smtp": f"{x.smtp_host}:{x.smtp_port}", "security": x.imap_security.value,
              "tls_pinned": bool(x.tls_fingerprint_sha256),
+             "address_mode": x.address_mode, "identities": list(x.identities),
              "paused": x.name in pol.paused_accounts} for x in cfg.accounts]
         if self.a.json:
             _dump(rows)
@@ -310,8 +311,10 @@ class Cli:
             print("No accounts configured. Run `mcp-proton init`.")
         else:
             _table([[r["name"], r["imap"], r["smtp"], r["security"],
-                     "pinned" if r["tls_pinned"] else "-", "paused" if r["paused"] else ""]
-                    for r in rows], ["NAME", "IMAP", "SMTP", "TLS", "PIN", "STATE"])
+                     "pinned" if r["tls_pinned"] else "-", r["address_mode"] or "-",
+                     ", ".join(r["identities"]) or "-", "paused" if r["paused"] else ""]
+                    for r in rows],
+                   ["NAME", "IMAP", "SMTP", "TLS", "PIN", "MODE", "IDENTITIES", "STATE"])
         return 0
 
     def cmd_accounts_remove(self) -> int:

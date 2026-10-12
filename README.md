@@ -56,7 +56,7 @@ flowchart TB
 
 ## Quickstart
 
-**Requirements:** a paid Proton Mail plan that includes Bridge, with Bridge installed and signed in, and Python 3.11 or newer. macOS is the first development target. Linux and Windows are untested.
+**Requirements:** a paid Proton Mail plan, with Proton Mail Bridge installed and signed in, and Python 3.11 or newer. [Setting up Bridge](docs/bridge.md) covers the Bridge side, including which settings matter. macOS is the first development target. Linux and Windows are untested.
 
 ```sh
 pip install https://github.com/w0h1v/mcp-proton/releases/download/v0.2.0b2/mcp_proton-0.2.0b2-py3-none-any.whl
@@ -67,7 +67,7 @@ mcp-proton client-config hermes       # or: claude-desktop, generic
 
 `mcp-proton init` walks through five steps:
 
-1. **Connect Bridge.** Host and ports (default IMAP 1143, SMTP 1025), Bridge username and Bridge password. The password goes to the OS credential store. On headless systems use `--secret-ref env:VAR` or `--secret-ref file:/path` (mode 0600). There is no plaintext fallback.
+1. **Connect Bridge.** Host, ports (default IMAP 1143, SMTP 1025) and connection mode (`--security starttls` or `ssl`), and the username and password from Bridge's **Mailbox details**, not your Proton password. In Bridge's split address mode, set up one account per address. The password goes to the OS credential store. On headless systems use `--secret-ref env:VAR` or `--secret-ref file:/path` (mode 0600). There is no plaintext fallback.
 2. **Trust Bridge's certificate.** Bridge uses a self-signed certificate. Setup shows its SHA-256 fingerprint and pins it after you confirm, or uses `--tls-ca-file` with Bridge's exported certificate.
 3. **Choose an autonomy preset.** Until you choose one, every operation is denied.
 4. **Choose storage mode.** `live` (default) keeps no copy of your mail. `metadata` and `index` keep a local cache for faster listing and full-text search.
