@@ -37,6 +37,7 @@ from ..bridge.ports import MailStore
 from ..domain.errors import ErrorCode, MailError, invalid
 from ..domain.families import OperationFamily
 from ..domain.models import (
+    MAX_OUTGOING_ATTACHMENTS,
     Address,
     ArtifactAttachment,
     ItemResult,
@@ -273,6 +274,12 @@ def update_draft(app: MailApp, caller: CallerContext, handle: str, changes: dict
         else (ArtifactAttachment if "artifact_id" in i else LocalAttachment).model_validate(i)
         for i in changes.get("add_attachments") or []
     ]
+    # The updated draft must fit the same limits as a new message.
+    kept = existing - remove
+    if len(kept) + len(add_items) > MAX_OUTGOING_ATTACHMENTS:
+        raise invalid(f"a draft can have at most {MAX_OUTGOING_ATTACHMENTS} attachments")
+    _out_from_fields(h.account, {k: fields[k] for k in (*_ADDRESS_FIELDS, *_TEXT_FIELDS,
+                                                         "in_reply_to", "references")})
     manifest = att.build_manifest(app, caller, add_items, h.account)
 
     # The author's From is carried over unchanged; identity is enforced when sending.
@@ -435,6 +442,8 @@ def send_draft(app: MailApp, caller: CallerContext, handle: str,
     _require_draft(store, h.mailbox)
     raw = store.fetch_message(h.mailbox, h.uidvalidity, h.uid).raw
     fields = mime.extract_draft_payload(raw)
+    # what is journaled and sent must fit the limits of a new message
+    _out_from_fields(h.account, {k: fields[k] for k in ("to", "cc", "bcc", "subject")})
     account = app.config.account(h.account)
     from_addr = sender_identity(account, Address(**fields["from"]) if fields["from"] else None)
     recipients = dedupe_addresses(

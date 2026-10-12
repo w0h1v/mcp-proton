@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import threading
 from datetime import timedelta
@@ -245,8 +246,24 @@ def test_delivery_budget_stops_the_pass(app, caller, sink, clock):
     for _ in range(3):
         register(app, caller, sink)
     new_mail_event(app)
-    ticks = iter([0.0, 0.0, 20.0, 20.0, 20.0])  # budget is spent after the first webhook
+    # deadline, first webhook, its event; then the budget is spent
+    ticks = itertools.chain([0.0, 0.0, 0.0], itertools.repeat(20.0))
     disp = Dispatcher(app, sleep_fn=lambda s: None, budget_seconds=15.0,
                       clock=lambda: next(ticks))
     assert disp.deliver_all(clock.after(seconds=1)) == 1
     assert len(sink.requests) == 1
+
+
+def test_delivery_budget_applies_between_events_of_one_webhook(app, caller, sink, clock):
+    register(app, caller, sink)
+    rec = events.Reconciler(app)
+    rec.reconcile(ACCOUNT, "INBOX")
+    for i in range(3):
+        app.store(ACCOUNT).append("INBOX", make_raw(subject=f"m{i}"))
+    rec.reconcile(ACCOUNT, "INBOX")
+    ticks = itertools.chain([0.0, 0.0, 0.0], itertools.repeat(20.0))  # spent after one event
+    disp = Dispatcher(app, sleep_fn=lambda s: None, budget_seconds=15.0,
+                      clock=lambda: next(ticks))
+    assert disp.deliver_all(clock.after(seconds=1)) == 1
+    [row] = webhooks.list_webhooks(app, caller)
+    assert row["cursor"] > 0  # progress kept; the rest go next pass

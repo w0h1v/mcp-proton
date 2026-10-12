@@ -316,22 +316,32 @@ def _defect_notes(msg: PyMessage) -> list[str]:
     return [f"mime defect: {n}" for n in names[:10]]
 
 
-def _bodies(msg: PyMessage, max_chars: int | None = None) -> tuple[str | None, str | None]:
-    """Text and HTML bodies. With ``max_chars``, parts after the first ``max_chars``
-    characters of each kind are not decoded (the caller truncates to that anyway)."""
+def _bodies(msg: PyMessage) -> tuple[str | None, str | None]:
+    text, html, _skipped = _collect_bodies(msg, None)
+    return text, html
+
+
+def _collect_bodies(msg: PyMessage, max_chars: int | None
+                    ) -> tuple[str | None, str | None, bool]:
+    """Text and HTML bodies, and whether parts were skipped. With ``max_chars``, once
+    ``max_chars`` characters of a kind are collected its later parts are not decoded
+    (the caller truncates to that length anyway)."""
     texts: list[str] = []
     htmls: list[str] = []
     sizes = {"text": 0, "html": 0}
+    skipped = False
     for _pid, part in _leaves(msg):
         if _is_attachment(part):
             continue
         kind = "html" if part.get_content_type() == "text/html" else "text"
-        if max_chars is not None and sizes[kind] > max_chars:
+        if max_chars is not None and sizes[kind] >= max_chars:
+            skipped = True
             continue
         chunk = _part_text(part)
         sizes[kind] += len(chunk)
         (htmls if kind == "html" else texts).append(chunk)
-    return ("\n\n".join(texts) if texts else None, "\n\n".join(htmls) if htmls else None)
+    return ("\n\n".join(texts) if texts else None, "\n\n".join(htmls) if htmls else None,
+            skipped)
 
 
 # ------------------------------------------------------------------ header access
@@ -485,8 +495,7 @@ def parse_message(
 def _build_body(
     msg: PyMessage, max_chars: int, body_format: Literal["text", "html", "both"]
 ) -> MessageBody:
-    text, html = _bodies(msg, max_chars)
-    truncated = False
+    text, html, truncated = _collect_bodies(msg, max_chars)
     if html is not None and len(html) > max_chars:
         html, truncated = html[:max_chars], True
     if text is not None and len(text) > max_chars:

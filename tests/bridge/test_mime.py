@@ -497,3 +497,13 @@ def test_body_parts_past_the_limit_are_not_decoded(monkeypatch):
     monkeypatch.setattr(mime, "_part_text", lambda p: calls.append(1) or real(p))
     body = mime._build_body(msg, 150, "both")
     assert len(calls) == 2 and body.truncated
+
+
+def test_body_exactly_at_the_limit_skips_the_rest(monkeypatch):
+    parts = [f"Content-Type: text/plain\r\n\r\n{'x' * 100}\r\n".encode() for _ in range(3)]
+    msg = mime._parse(b"Subject: x\r\n" + _multipart(parts, "b"))
+    calls = []
+    real = mime._part_text
+    monkeypatch.setattr(mime, "_part_text", lambda p: calls.append(1) or real(p))
+    body = mime._build_body(msg, len(real(mime._leaves(msg)[0][1])), "both")
+    assert len(calls) == 1 and body.truncated

@@ -301,18 +301,21 @@ class Dispatcher:
     def deliver_all(self, now: datetime) -> int:
         """One pass. Healthy destinations go first; the pass stops once its time budget
         is spent, and the rest are served on the next pass."""
+        # Healthy destinations first, and among them the one served least recently, so a
+        # slow destination cannot keep the others waiting pass after pass.
         rows = self.app.db.query(
-            "SELECT * FROM webhooks WHERE status='active' ORDER BY failures, id")
+            "SELECT * FROM webhooks WHERE status='active' "
+            "ORDER BY failures, COALESCE(last_delivery_at, ''), id")
         delivered = 0
-        started = self.clock()
+        deadline = self.clock() + self.budget_seconds
         for wh in map(_row, rows):
-            if self.clock() - started >= self.budget_seconds:
+            if self.clock() >= deadline:
                 log.info("webhook delivery budget spent; continuing next pass")
                 break
             if wh.next_attempt_at is not None and wh.next_attempt_at > now:
                 continue
             try:
-                delivered += self.deliver(wh, now)
+                delivered += self.deliver(wh, now, deadline)
             except Exception:  # noqa: BLE001 - one bad destination never blocks the rest
                 log.exception("webhook %s delivery crashed", wh.id)
         return delivered
@@ -327,7 +330,9 @@ class Dispatcher:
                 raise
             return False
 
-    def deliver(self, wh: Webhook, now: datetime) -> int:
+    def deliver(self, wh: Webhook, now: datetime, deadline: float | None = None) -> int:
+        """Deliver ``wh``'s pending events in order; stop (keeping the cursor) once
+        ``deadline`` on :attr:`clock` has passed."""
         caller = job_caller(wh.client_id)
         rows = self.app.db.query(
             "SELECT * FROM events WHERE account=? AND seq>? ORDER BY seq LIMIT ?",
@@ -336,6 +341,8 @@ class Dispatcher:
         cursor = wh.cursor
         try:
             for r in rows:
+                if deadline is not None and self.clock() >= deadline:
+                    break
                 seq = int(r["seq"])
                 if r["type"] in wh.event_types and self._readable(caller, wh.account,
                                                                   r["mailbox"]):
