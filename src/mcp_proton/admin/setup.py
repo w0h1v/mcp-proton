@@ -88,14 +88,55 @@ def add_account_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument("--accept-fetched-fingerprint", action="store_true",
                    help="fetch the Bridge fingerprint, print it and pin it without asking")
     p.add_argument("--tls-ca-file", help="exported Bridge certificate used as trust root")
+    p.add_argument("--security", choices=["starttls", "ssl"],
+                   help="Bridge's Connection mode (Settings > Advanced settings); applies "
+                        "to IMAP and SMTP (default: starttls, Bridge's default)")
+    p.add_argument("--address-mode", choices=["combined", "split"],
+                   help="Bridge's address mode: combined (default in Bridge) or split, "
+                        "where each address has its own Mailbox details and mcp-proton account")
+    p.add_argument("--identity", action="append", default=[], metavar="ADDRESS",
+                   help="another address of this account it may send from (repeatable; "
+                        "combined mode only)")
     p.add_argument("--insecure-loopback-plaintext", action="store_true",
                    help="no TLS; only for loopback test servers")
     p.add_argument("--skip-connection-test", action="store_true")
     p.add_argument("--non-interactive", action="store_true", help="never prompt")
 
 
-def _security(args: argparse.Namespace) -> Security:
-    return Security.NONE if args.insecure_loopback_plaintext else Security.STARTTLS
+def _security(args: argparse.Namespace, pr: Prompter) -> Security:
+    chosen = getattr(args, "security", None)
+    if args.insecure_loopback_plaintext:
+        if chosen:
+            raise SetupError("--security cannot be combined with --insecure-loopback-plaintext")
+        return Security.NONE
+    if chosen is None:
+        chosen = pr.choose("Bridge connection mode (Settings > Advanced settings)",
+                           ["starttls", "ssl"], "starttls")
+    return Security(chosen)
+
+
+def _address_mode(args: argparse.Namespace, pr: Prompter) -> str | None:
+    """Recorded as given; unknown (None) when non-interactive and not given."""
+    mode = getattr(args, "address_mode", None)
+    if mode is None and pr.interactive:
+        mode = pr.choose("Bridge address mode", ["combined", "split"], "combined")
+    return mode
+
+
+def _identities(args: argparse.Namespace, address: str, mode: str | None) -> list[str]:
+    from email.utils import parseaddr
+
+    out: list[str] = []
+    for raw in getattr(args, "identity", None) or []:
+        _name, addr = parseaddr(raw)
+        if "@" not in addr or addr != raw.strip():
+            raise SetupError(f"--identity must be a plain email address: {raw!r}")
+        if addr.lower() != address.lower() and addr.lower() not in (o.lower() for o in out):
+            out.append(addr)
+    if out and mode == "split":
+        raise SetupError("in split mode each address has its own Bridge credentials; add it "
+                         "as a separate account (mcp-proton accounts add) instead of --identity")
+    return out
 
 
 def gather_account(args: argparse.Namespace, pr: Prompter, taken: set[str],
@@ -111,7 +152,9 @@ def gather_account(args: argparse.Namespace, pr: Prompter, taken: set[str],
     imap_port = args.imap_port or int(pr.ask("Bridge IMAP port", "1143") or 1143)
     smtp_host = args.smtp_host or pr.ask("Bridge SMTP host", imap_host)
     smtp_port = args.smtp_port or int(pr.ask("Bridge SMTP port", "1025") or 1025)
-    security = _security(args)
+    security = _security(args, pr)
+    address_mode = _address_mode(args, pr)
+    identities = _identities(args, address, address_mode)
     assert imap_host
     if security is Security.NONE and not (tls.is_loopback(imap_host)
                                           and tls.is_loopback(smtp_host or "")):
@@ -122,7 +165,7 @@ def gather_account(args: argparse.Namespace, pr: Prompter, taken: set[str],
             imap_host=imap_host or "127.0.0.1", imap_port=imap_port,
             smtp_host=smtp_host or "127.0.0.1", smtp_port=smtp_port,
             imap_security=security, smtp_security=security,
-            tls_ca_file=args.tls_ca_file,
+            tls_ca_file=args.tls_ca_file, address_mode=address_mode, identities=identities,
         )
     except ValueError as e:
         raise SetupError(f"invalid account settings: {e}") from e
@@ -160,8 +203,8 @@ def _pin_certificate(args: argparse.Namespace, pr: Prompter, acct: AccountConfig
         acct.tls_fingerprint_sha256 = tls.normalize_fingerprint(args.tls_fingerprint)
         return
     try:
-        fp = tls.fetch_fingerprint_starttls_imap(acct.imap_host, acct.imap_port,
-                                                 acct.connect_timeout)
+        fp = tls.fetch_fingerprint_imap(acct.imap_host, acct.imap_port, acct.imap_security,
+                                        acct.connect_timeout)
     except (MailError, OSError) as e:
         raise SetupError(f"could not read Bridge certificate from "
                          f"{acct.imap_host}:{acct.imap_port}: {e}") from e

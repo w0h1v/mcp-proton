@@ -324,3 +324,38 @@ def test_policy_show_includes_client_constraints(capsys):
     assert "@allowed.test" in text
     _, other, _ = run(capsys, "policy", "show", "--client", "nobody")
     assert "not configured" in other
+
+
+def test_init_records_ssl_mode_address_mode_and_identities(capsys):
+    argv = ["init", "--non-interactive", "--name", "main", "--address", ADDRESS,
+            "--secret-ref", "env:X", "--tls-fingerprint", "aa", "--skip-connection-test",
+            "--security", "ssl", "--address-mode", "combined",
+            "--identity", "alias@proton.example", "--identity", "Alias@proton.example",
+            "--identity", ADDRESS]
+    assert run(capsys, *argv)[0] == 0
+    acct = load_service_config().accounts[0]
+    assert acct.imap_security.value == "ssl" and acct.smtp_security.value == "ssl"
+    assert acct.address_mode == "combined"
+    assert acct.identities == ["alias@proton.example"]  # deduplicated, own address dropped
+    _, out, _ = run(capsys, "accounts", "list", "--json")
+    assert '"address_mode": "combined"' in out
+
+
+def test_init_defaults_to_starttls_and_unknown_address_mode(capsys):
+    argv = ["init", "--non-interactive", "--address", ADDRESS, "--secret-ref", "env:X",
+            "--tls-fingerprint", "aa", "--skip-connection-test"]
+    assert run(capsys, *argv)[0] == 0
+    acct = load_service_config().accounts[0]
+    assert acct.imap_security.value == "starttls" and acct.address_mode is None
+
+
+@pytest.mark.parametrize("extra, message", [
+    (["--address-mode", "split", "--identity", "alias@proton.example"], "split mode"),
+    (["--identity", "Alias <alias@proton.example>"], "plain email address"),
+    (["--security", "ssl", "--insecure-loopback-plaintext"], "--security"),
+])
+def test_init_rejects_inconsistent_bridge_options(capsys, extra, message):
+    argv = ["init", "--non-interactive", "--address", ADDRESS, "--secret-ref", "env:X",
+            "--tls-fingerprint", "aa", "--skip-connection-test", *extra]
+    code, _, err = run(capsys, *argv)
+    assert code == 1 and message in err

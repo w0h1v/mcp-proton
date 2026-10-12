@@ -303,6 +303,7 @@ class Cli:
             {"name": x.name, "imap": f"{x.imap_host}:{x.imap_port}",
              "smtp": f"{x.smtp_host}:{x.smtp_port}", "security": x.imap_security.value,
              "tls_pinned": bool(x.tls_fingerprint_sha256),
+             "address_mode": x.address_mode, "identities": list(x.identities),
              "paused": x.name in pol.paused_accounts} for x in cfg.accounts]
         if self.a.json:
             _dump(rows)

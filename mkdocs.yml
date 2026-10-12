@@ -46,6 +46,7 @@ markdown_extensions:
 nav:
   - Overview: index.md
   - Using it:
+      - Proton Mail Bridge: bridge.md
       - Deployment and trust boundaries: deployment.md
       - Storage and retention: storage.md
       - Bridge compatibility: compatibility.md
