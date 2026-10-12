@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: crazy-max/ghaction-github-labeler@v5
+      - uses: crazy-max/ghaction-github-labeler@v6
         with:
           yaml-file: .github/labels.yml
           skip-delete: true  # keep labels created by hand or by other tools
@@ -36,6 +36,6 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/labeler@v5
+      - uses: actions/labeler@v7
         with:
           configuration-path: .github/labeler.yml
