@@ -13,3 +13,5 @@ htmlcov/
 *.db
 .env
 site/
+
+uv.lock
