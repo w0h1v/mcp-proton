@@ -13,6 +13,7 @@ search over referenced ids) and delegates to it.
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Literal
@@ -35,6 +36,9 @@ NOTE = ("presentation only; does not match Proton's conversation grouping exactl
 HEURISTIC_WINDOW = timedelta(days=30)
 MAX_ROUNDS = 4  # fixed-point iterations of the Message-ID search
 MAX_IDS_PER_ROUND = 40  # Message-IDs searched per round and mailbox
+MAX_SEARCHES = 60  # IMAP SEARCH commands per call, across all rounds and mailboxes
+DEFAULT_MAX_SECONDS = 20.0  # checked between searches; one slow SEARCH is not interrupted
+_clock = time.monotonic
 _ID_RE = re.compile(r"<([^<>\s]+)>")
 _PREFIX_RE = re.compile(r"^\s*((re|fwd?|aw|sv|antw)\s*(\[\d+\])?\s*:\s*)+", re.IGNORECASE)
 
@@ -115,6 +119,7 @@ class Conversation(Model):
     heuristic: bool
     searched_mailboxes: list[str]
     truncated: bool = False
+    budget_exhausted: Literal["searches", "time"] | None = None  # stopped early; see incomplete
     note: str = NOTE
 
 
@@ -214,15 +219,36 @@ def _creates_cycle(parent: dict[str, str], child: str, new_parent: str) -> bool:
 class _Gatherer:
     """Bounded header collection for one conversation."""
 
-    def __init__(self, store: MailStore, account: str, mailboxes: list[str], limit: int) -> None:
+    def __init__(self, store: MailStore, account: str, mailboxes: list[str], limit: int,
+                 max_seconds: float = DEFAULT_MAX_SECONDS) -> None:
         self.store = store
         self.account = account
         self.mailboxes = mailboxes
         self.limit = limit
         self.headers: dict[str, HeaderInfo] = {}  # handle token -> headers
         self.truncated = False
+        self.budget_exhausted: Literal["searches", "time"] | None = None
+        self._searches = 0
+        self._deadline = _clock() + max_seconds
         self._seen: set[tuple[str, int]] = set()  # fetched (mailbox, uid)
         self._searched: set[tuple[str, str]] = set()  # (query kind, normalized id)
+        self._found: set[tuple[str, str]] = set()  # (mailbox, normalized Message-ID) fetched
+
+    def _done(self) -> bool:
+        return self.truncated or self.budget_exhausted is not None
+
+    def _spend(self) -> bool:
+        """Reserve one IMAP SEARCH; False once the limit, search or time budget is hit."""
+        if self._done():
+            return False
+        if self._searches >= MAX_SEARCHES:
+            self.budget_exhausted = "searches"
+        elif _clock() >= self._deadline:
+            self.budget_exhausted = "time"
+        else:
+            self._searches += 1
+            return True
+        return False
 
     def add_message(self, mailbox: str, uidvalidity: int, uid: int, *, strict: bool = False
                     ) -> HeaderInfo | None:
@@ -247,6 +273,9 @@ class _Gatherer:
             in_reply_to=msg.in_reply_to, references=tuple(msg.references), subject=msg.subject,
             date=msg.date or fetched.internal_date, from_=tuple(msg.from_))
         self.headers[info.handle] = info
+        mid = normalize_id(info.message_id)
+        if mid:
+            self._found.add((mailbox, mid))
         return info
 
     def referenced_ids(self) -> set[str]:
@@ -262,6 +291,8 @@ class _Gatherer:
         """Fixed point (bounded): fetch messages for every known id and every message
         that mentions a known id in References / In-Reply-To."""
         for _ in range(MAX_ROUNDS):
+            if self._done():
+                return
             before = len(self.headers)
             ids = sorted(self.referenced_ids())
             budget = MAX_IDS_PER_ROUND
@@ -275,6 +306,8 @@ class _Gatherer:
                 for kind in todo:
                     self._searched.add((kind, mid))
                     for mailbox in self.mailboxes:
+                        if kind == "id" and (mailbox, mid) in self._found:
+                            continue  # already have this message here
                         self._search(mailbox, kind, mid)
             if len(self.headers) == before:
                 return
@@ -282,6 +315,8 @@ class _Gatherer:
     def _search(self, mailbox: str, kind: str, mid: str) -> None:
         wrapped = f"<{mid}>"
         header = {"id": "Message-ID", "refs": "References", "irt": "In-Reply-To"}[kind]
+        if not self._spend():
+            return
         try:
             uidvalidity, uids = self.store.list_uids(mailbox, ["HEADER", header, wrapped])
         except MailError:
@@ -297,6 +332,8 @@ class _Gatherer:
         query = SearchQuery(subject=subject, since=date - HEURISTIC_WINDOW,
                             before=date + HEURISTIC_WINDOW + timedelta(days=1))
         for mailbox in self.mailboxes:
+            if not self._spend():
+                return
             try:
                 uidvalidity, uids, _ = self.store.search(mailbox, query)
             except MailError:
@@ -331,8 +368,13 @@ def _has_threading_headers(h: HeaderInfo) -> bool:
 
 
 def get_conversation(app: MailApp, caller: CallerContext, handle: str,
-                     mailboxes: list[str] | None = None, limit: int = 100) -> Conversation:
-    """Thread containing the message ``handle`` (presentation only)."""
+                     mailboxes: list[str] | None = None, limit: int = 100,
+                     max_seconds: float = DEFAULT_MAX_SECONDS) -> Conversation:
+    """Thread containing the message ``handle`` (presentation only).
+
+    Searching stops at ``limit`` messages, ``MAX_SEARCHES`` IMAP searches or
+    ``max_seconds``, whichever comes first; the last two set ``budget_exhausted``.
+    """
     [seed_handle] = parse_handles([handle])
     account = seed_handle.account
     app.authorize_read(caller, account, [seed_handle.mailbox], kind=KIND_GET)
@@ -344,7 +386,7 @@ def get_conversation(app: MailApp, caller: CallerContext, handle: str,
         scope = _default_mailboxes(app, caller, account, seed_handle.mailbox)
 
     store = app.store(account)
-    gatherer = _Gatherer(store, account, scope, limit)
+    gatherer = _Gatherer(store, account, scope, limit, max(1.0, min(float(max_seconds), 120.0)))
     seed = gatherer.add_message(seed_handle.mailbox, seed_handle.uidvalidity, seed_handle.uid,
                                 strict=True)
     assert seed is not None
@@ -356,9 +398,10 @@ def get_conversation(app: MailApp, caller: CallerContext, handle: str,
     result = build_threads(list(gatherer.headers.values()))
     return Conversation(
         seed=seed.handle, nodes=result.nodes, occurrences=result.occurrences,
-        incomplete=result.incomplete, missing_message_ids=result.missing, method=result.method,
+        incomplete=result.incomplete or gatherer.budget_exhausted is not None,
+        missing_message_ids=result.missing, method=result.method,
         heuristic=result.method != "headers", searched_mailboxes=scope,
-        truncated=gatherer.truncated)
+        truncated=gatherer.truncated, budget_exhausted=gatherer.budget_exhausted)
 
 
 __all__ = [

@@ -9,6 +9,7 @@ import pytest
 from mcp_proton.domain.errors import ErrorCode, MailError
 from mcp_proton.domain.models import Address, MessageHandle
 from mcp_proton.policy.model import ClientConfig
+from mcp_proton.services import conversations
 from mcp_proton.services.conversations import (
     NOTE,
     HeaderInfo,
@@ -202,3 +203,56 @@ def test_same_message_id_collapses_into_occurrences():
     res = build_threads([hdr(1, "a"), hdr(2, "A", mailbox="Labels/x"), hdr(3, None, days=50)])
     assert len(res.nodes) == 2 and res.nodes[0].occurrence_count == 2
     assert [o.handle for o in res.occurrences["a"]] == ["h1", "h2"]
+
+
+# ---------------------------------------------------------------- search budgets
+
+
+def _count_searches(app, monkeypatch) -> list[list[object]]:
+    store = app.store(ACCOUNT)
+    calls: list[list[object]] = []
+    orig = store.list_uids
+
+    def spy(mailbox, criteria=None):
+        calls.append(list(criteria or []))
+        return orig(mailbox, criteria)
+
+    monkeypatch.setattr(store, "list_uids", spy)
+    return calls
+
+
+def test_limit_stops_searching(app, caller, put, monkeypatch):
+    a = put("All Mail", raw("T", "a@x", 1))
+    for i in range(6):  # each reply brings new ids that would otherwise be searched
+        put("All Mail", raw("Re: T", f"r{i}@x", 2 + i, irt="a@x", refs=["a@x", f"z{i}@x"]))
+    calls = _count_searches(app, monkeypatch)
+    conv = get_conversation(app, caller, a, limit=2)
+    assert conv.truncated and len(conv.nodes) == 2
+    assert len(calls) <= 3  # stops as soon as the limit is reached
+
+
+def test_known_message_id_is_not_searched_again(app, caller, put, monkeypatch):
+    a = put("All Mail", raw("Hello", "a@x", 1))
+    calls = _count_searches(app, monkeypatch)
+    get_conversation(app, caller, a)
+    assert ["HEADER", "Message-ID", "<a@x>"] not in calls
+
+
+def test_search_budget_bounds_imap_searches(app, caller, put, monkeypatch):
+    refs = [f"gone{i}@x" for i in range(200)]
+    b = put("All Mail", raw("Re: Big", "b@x", 2, irt="gone0@x", refs=refs))
+    calls = _count_searches(app, monkeypatch)
+    conv = get_conversation(app, caller, b)
+    assert len(calls) <= conversations.MAX_SEARCHES
+    assert conv.budget_exhausted == "searches" and conv.incomplete
+
+
+def test_time_budget_stops_searching(app, caller, put, monkeypatch):
+    refs = [f"gone{i}@x" for i in range(30)]
+    b = put("All Mail", raw("Re: Slow", "b@x", 2, irt="gone0@x", refs=refs))
+    calls = _count_searches(app, monkeypatch)
+    ticks = iter(range(0, 10_000, 5))  # every clock read advances 5 s
+    monkeypatch.setattr(conversations, "_clock", lambda: float(next(ticks)))
+    conv = get_conversation(app, caller, b, max_seconds=12)
+    assert len(calls) <= 3
+    assert conv.budget_exhausted == "time" and conv.incomplete

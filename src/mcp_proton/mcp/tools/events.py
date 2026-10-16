@@ -48,7 +48,11 @@ def build(gw: Gateway) -> LocalProvider:
         handle: HandleParam,
         mailboxes: Annotated[list[str] | None, Field(max_length=50)] = None,
         limit: Annotated[int, Field(ge=1, le=500)] = 100,
+        max_seconds: Annotated[float, Field(
+            ge=1, le=120, description="Search time budget; a partial thread is returned "
+            "with budget_exhausted set when it runs out.")] = conversations.DEFAULT_MAX_SECONDS,
     ) -> dict[str, Any]:
-        return gw.read(lambda c: conversations.get_conversation(app, c, handle, mailboxes, limit))
+        return gw.read(lambda c: conversations.get_conversation(
+            app, c, handle, mailboxes, limit, max_seconds))
 
     return p
