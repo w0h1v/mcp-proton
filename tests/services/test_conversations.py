@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import email
 from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 
 import pytest
 
@@ -38,7 +40,12 @@ def raw(subject: str, mid: str | None, day: int, *, irt: str | None = None,
 @pytest.fixture
 def put(app):
     def _put(mailbox: str, data: bytes) -> str:
-        r = app.store(ACCOUNT).append(mailbox, data)
+        # IMAP SINCE/BEFORE filter on INTERNALDATE, not the Date header. Without an
+        # explicit internal date the fake server stamps "now", so the subject
+        # heuristic's +/-30-day window around the October fixture dates stopped
+        # matching once the wall clock passed early November 2026.
+        sent = parsedate_to_datetime(email.message_from_bytes(data)["Date"])
+        r = app.store(ACCOUNT).append(mailbox, data, internal_date=sent)
         return MessageHandle(account=ACCOUNT, mailbox=mailbox, uidvalidity=r.uidvalidity,
                              uid=r.uid).token()
 
