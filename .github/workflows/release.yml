@@ -67,7 +67,7 @@ jobs:
         run: |
           uvx --from cyclonedx-bom cyclonedx-py environment --of JSON -o dist/sbom.cdx.json || \
             echo "SBOM generation failed; release continues without it"
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
@@ -81,7 +81,7 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
@@ -112,7 +112,7 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
