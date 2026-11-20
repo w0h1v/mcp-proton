@@ -19,7 +19,7 @@ classifiers = [
   "Topic :: Communications :: Email",
 ]
 dependencies = [
-  "fastmcp>=4.1.0,<4.2",
+  "fastmcp>=4.1.0,<4.3",
   "pydantic>=2.10,<3",
   "imapclient>=3.0,<5",
   "keyring>=25,<26",
